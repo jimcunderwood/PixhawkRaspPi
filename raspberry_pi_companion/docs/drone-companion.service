@@ -1,0 +1,19 @@
+[Unit]
+Description=Agricultural Drone Companion Computer
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/agri_dronesetup/raspberry_pi_companion
+Environment="PATH=/home/pi/agri_dronesetup/raspberry_pi_companion/venv/bin"
+ExecStart=/home/pi/agri_dronesetup/raspberry_pi_companion/venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=drone-companion
+
+[Install]
+WantedBy=multi-user.target

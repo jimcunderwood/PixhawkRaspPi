@@ -1,0 +1,5 @@
+bash
+
+mkdir  -p /home/claude/agri_drone/{core,api,hardware,utils} && touch /home/claude/agri_drone/__init__.py
+
+
