@@ -1,11 +1,11 @@
 dronekit==2.9.2
-pymavlink==2.4.45
+pymavlink==2.4.49
 fastapi==0.104.1
 uvicorn==0.24.0
 websockets==12.0
 pydantic==2.5.0
 python-dotenv==1.0.0
-RPi.GPIO==0.7.0
+RPi.GPIO==0.7.1
 board==1.0
 adafruit-circuitpython-busdevice==5.2.6
 pyserial==3.5

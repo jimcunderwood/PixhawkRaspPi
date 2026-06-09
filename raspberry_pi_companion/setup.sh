@@ -30,16 +30,17 @@ sudo apt-get install -y \
     libjpeg-dev \
     zlib1g-dev \
     libatlas-base-dev \
-    libjasper-dev \
     libharfbuzz0b \
-    libwebp6 \
-    libtiff5 \
-    libjasper1
+    libtiff5
 
-# Enable serial interface for Pixhawk communication
-echo "Enabling serial interface..."
-sudo raspi-config nonint do_serial_hw 0
-sudo raspi-config nonint do_serial_console 1
+# Enable serial interface for Pixhawk communication (Raspberry Pi only)
+if command -v raspi-config &> /dev/null; then
+    echo "Enabling serial interface..."
+    sudo raspi-config nonint do_serial_hw 0
+    sudo raspi-config nonint do_serial_console 1
+else
+    echo "Skipping serial interface setup (not on Raspberry Pi)"
+fi
 
 # Create virtual environment
 echo "Creating Python virtual environment..."
