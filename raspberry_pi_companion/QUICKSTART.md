@@ -13,7 +13,7 @@
 # On Raspberry Pi
 cd /home/pi
 git clone <repository-url>
-cd agri_dronesetup/raspberry_pi_companion
+cd PixhawkRaspPi/raspberry_pi_companion
 
 # Run setup script
 chmod +x setup.sh

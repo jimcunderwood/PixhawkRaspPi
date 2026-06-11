@@ -274,6 +274,40 @@ sudo journalctl -n 50  # Last 50 log lines
 
 3. Check Pixhawk TELEM1 settings in Mission Planner
 
+### PX4 SITL on Raspberry Pi
+
+If you want to run PX4 SITL locally on the Raspberry Pi, use the helper script and local UDP configuration.
+
+```bash
+chmod +x install_sitl.sh
+./install_sitl.sh
+```
+
+Then configure `.env` for local UDP receive:
+
+```bash
+MAVLINK_CONNECTION_TYPE=udp
+MAVLINK_UDP_DIRECTION=in
+MAVLINK_UDP_IP=0.0.0.0
+MAVLINK_UDP_PORT=5760
+```
+
+Start SITL on the Pi with a PX4 build or package that sends UDP to port `5760`, and then run:
+
+```bash
+source venv/bin/activate
+python main.py
+```
+
+If SITL is on another machine, use remote UDP-out mode instead:
+
+```bash
+MAVLINK_CONNECTION_TYPE=udp
+MAVLINK_UDP_DIRECTION=out
+MAVLINK_UDP_IP=<sitl-host-ip>
+MAVLINK_UDP_PORT=5760
+```
+
 ### GPIO Issues
 
 Check GPIO numbering:

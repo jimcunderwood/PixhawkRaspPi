@@ -1,5 +1,6 @@
 dronekit==2.9.2
 pymavlink==2.4.49
+future>=0.18.2
 fastapi==0.104.1
 uvicorn==0.24.0
 websockets==12.0

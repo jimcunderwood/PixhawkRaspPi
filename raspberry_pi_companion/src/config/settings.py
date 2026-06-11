@@ -12,6 +12,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _parse_connection_type(value: str) -> 'ConnectionType':
+    try:
+        return ConnectionType(value.strip().lower())
+    except Exception:
+        return ConnectionType.SERIAL
+
+
 class ConnectionType(Enum):
     """MAVLink connection types"""
     SERIAL = "serial"
@@ -22,11 +29,14 @@ class ConnectionType(Enum):
 @dataclass
 class MAVLinkConfig:
     """MAVLink connection configuration"""
-    connection_type: ConnectionType = ConnectionType.SERIAL
+    connection_type: ConnectionType = _parse_connection_type(
+        os.getenv("MAVLINK_CONNECTION_TYPE", "serial")
+    )
     port: str = os.getenv("MAVLINK_PORT", "/dev/ttyAMA0")
     baudrate: int = int(os.getenv("MAVLINK_BAUDRATE", "57600"))
     udp_ip: str = os.getenv("MAVLINK_UDP_IP", "127.0.0.1")
     udp_port: int = int(os.getenv("MAVLINK_UDP_PORT", "14550"))
+    udp_direction: str = os.getenv("MAVLINK_UDP_DIRECTION", "out").strip().lower()
     timeout: int = int(os.getenv("MAVLINK_TIMEOUT", "30"))
 
 

@@ -38,12 +38,36 @@ class ConnectionManager:
             logger.info(f"Connecting to Pixhawk via {self.config.connection_type.value}...")
             
             connection_string = self._build_connection_string()
-            
-            self.vehicle = connect(
-                connection_string,
-                wait_ready=True,
-                timeout=self.config.timeout
-            )
+
+            # For remote UDP-out connections PyMAVLink handles the socket semantics
+            # more predictably than DroneKit's high-level connect wrapper. Create
+            # a lower-level MAV connection and construct a DroneKit Vehicle from
+            # it when using UDP-out so we can connect to remote SITL without
+            # requiring SITL to send to the Pi's IP.
+            if self.config.connection_type == ConnectionType.UDP and self.config.udp_direction in {"out", "output"}:
+                from dronekit.mavlink import MAVConnection
+
+                handler = MAVConnection(f"udpout:{self.config.udp_ip}:{self.config.udp_port}")
+                handler.start()
+                vehicle = Vehicle(handler)
+                try:
+                    vehicle.wait_ready(True, timeout=self.config.timeout)
+                except Exception:
+                    logger.error("Timeout in initializing connection.")
+                    try:
+                        vehicle.close()
+                    except Exception:
+                        pass
+                    self.connected = False
+                    return False
+
+                self.vehicle = vehicle
+            else:
+                self.vehicle = connect(
+                    connection_string,
+                    wait_ready=True,
+                    timeout=self.config.timeout
+                )
             
             logger.info("Successfully connected to Pixhawk")
             self.connected = True
@@ -71,12 +95,19 @@ class ConnectionManager:
         """Build DroneKit connection string based on config"""
         if self.config.connection_type == ConnectionType.SERIAL:
             return f"{self.config.port}"
-        elif self.config.connection_type == ConnectionType.UDP:
-            return f"udpin:{self.config.udp_ip}:{self.config.udp_port}"
-        elif self.config.connection_type == ConnectionType.TCP:
-            return f"tcpin:{self.config.udp_ip}:{self.config.udp_port}"
-        else:
-            raise ValueError(f"Unknown connection type: {self.config.connection_type}")
+
+        if self.config.connection_type == ConnectionType.UDP:
+            direction = self.config.udp_direction
+            if direction in {"in", "input"}:
+                return f"udpin:{self.config.udp_ip}:{self.config.udp_port}"
+            if direction in {"out", "output"}:
+                return f"udpout:{self.config.udp_ip}:{self.config.udp_port}"
+            raise ValueError(f"Unknown UDP direction: {direction}. Use 'in' for local bind or 'out' for remote connect.")
+
+        if self.config.connection_type == ConnectionType.TCP:
+            return f"tcp:{self.config.udp_ip}:{self.config.udp_port}"
+
+        raise ValueError(f"Unknown connection type: {self.config.connection_type}")
 
     def _start_monitor_thread(self):
         """Start background thread to monitor connection health"""
