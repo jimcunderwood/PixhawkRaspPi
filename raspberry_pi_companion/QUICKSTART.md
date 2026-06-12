@@ -30,7 +30,7 @@ cp .env.example .env
 nano .env
 
 # Minimal required changes:
-# MAVLINK_PORT=/dev/ttyAMA0
+# MAVLINK_PORT=/dev/serial1
 # API_HOST=0.0.0.0
 # SPRAY_PUMP_PIN=17 (or your GPIO pin)
 ```
@@ -144,10 +144,10 @@ ws.run_forever()
 ### Can't connect to Pixhawk
 ```bash
 # Check serial port
-ls -la /dev/ttyAMA0
+ls -la /dev/serial1
 
 # Test with minicom
-minicom -b 57600 -o -D /dev/ttyAMA0
+minicom -b 57600 -o -D /dev/serial1
 
 # Check UART enabled
 dtparam -l | grep uart

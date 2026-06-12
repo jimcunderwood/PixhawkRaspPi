@@ -42,7 +42,7 @@
         │  └────────────────────────────────────────────────┘  │
         │                     ▲                                 │
         │                     │ Serial UART                     │
-        │                     │ (/dev/ttyAMA0, 57600 baud)     │
+        │                     │ (/dev/serial1, 57600 baud)     │
         └─────────────────────┼─────────────────────────────────┘
                               │
                     ┌─────────▼──────────┐
@@ -286,7 +286,7 @@ Environment variables in `.env`:
 
 ```
 [MAVLink]
-MAVLINK_PORT=/dev/ttyAMA0        # Serial port or UDP config
+MAVLINK_PORT=/dev/serial1        # Serial port or UDP config
 MAVLINK_BAUDRATE=57600
 MAVLINK_TIMEOUT=30
 

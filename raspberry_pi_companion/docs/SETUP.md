@@ -7,12 +7,13 @@
 The Pixhawk 4 connects to the Raspberry Pi via serial (UART):
 
 **Pixhawk TELEM1 to Pi GPIO**:
-- Pixhawk TELEM1 TX → Pi RX (GPIO 15)
-- Pixhawk TELEM1 RX → Pi TX (GPIO 14)
-- Pixhawk GND → Pi GND (GPIO 6)
+- Pixhawk Pin 3 (TELEM1 RX) → Pi Pin 32 (GPIO 12, UART1 TX)
+- Pixhawk Pin 2 (TELEM1 TX) → Pi Pin 33 (GPIO 13, UART1 RX)
+- Pixhawk Pin 6 (GND) → Pi Pin 6 (GND)
 
 **Wiring Details**:
 - Use a 5V-to-3.3V level converter if required (Pixhawk runs at 5V)
+- Enable UART1 on the Pi when using pins 32/33
 - Ensure solid solder joints or quality connectors
 - Use twisted pairs to minimize noise
 
@@ -49,11 +50,17 @@ sudo raspi-config nonint do_serial_hw 0
 sudo raspi-config nonint do_serial_console 1
 ```
 
+If you are using Pi pins 32/33 for Pixhawk UART1, also add the following to `/boot/config.txt`:
+```ini
+enable_uart=1
+dtoverlay=uart1
+```
+
 ### 2. Disable Serial Login
 
 ```bash
-sudo systemctl stop serial-getty@ttyAMA0.service
-sudo systemctl disable serial-getty@ttyAMA0.service
+sudo systemctl stop serial-getty@serial1.service || true
+sudo systemctl disable serial-getty@serial1.service || true
 ```
 
 ### 3. Grant GPIO Access
@@ -71,13 +78,13 @@ sudo reboot
 ### 4. Verify Serial Port
 
 ```bash
-ls -la /dev/ttyAMA0
+ls -la /dev/serial1
 # Should show: crw-rw---- 1 root dialout
 ```
 
 Test connection:
 ```bash
-cat /dev/ttyAMA0  # Should show telemetry data from Pixhawk
+cat /dev/serial1  # Should show telemetry data from Pixhawk
 ```
 
 ## Software Installation
@@ -98,7 +105,7 @@ nano .env
 ```
 
 Edit key settings:
-- `MAVLINK_PORT=/dev/ttyAMA0` (or `/dev/ttyUSB0` if using USB)
+- `MAVLINK_PORT=/dev/serial1` (or `/dev/ttyUSB0` if using USB)
 - `API_HOST=0.0.0.0` (accessible from network)
 - `API_PORT=8000`
 - Hardware pins match your wiring
@@ -243,7 +250,7 @@ ls /dev/tty*      # List all tty devices
 
 **Permission denied**:
 ```bash
-sudo chmod 666 /dev/ttyAMA0
+sudo chmod 666 /dev/serial1
 # Or better: add user to dialout group and reboot
 ```
 
@@ -269,7 +276,7 @@ sudo journalctl -n 50  # Last 50 log lines
 
 2. Test with Arduino IDE or minicom:
    ```bash
-   minicom -b 57600 -o -D /dev/ttyAMA0
+   minicom -b 57600 -o -D /dev/serial1
    ```
 
 3. Check Pixhawk TELEM1 settings in Mission Planner

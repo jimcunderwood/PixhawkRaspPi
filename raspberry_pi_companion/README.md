@@ -42,7 +42,7 @@ nano .env
 ```
 
 Key configuration options:
-- `MAVLINK_PORT`: Serial port for Pixhawk (default: `/dev/ttyAMA0`)
+- `MAVLINK_PORT`: Serial port for Pixhawk (e.g. `/dev/serial1` for Pi pins 32/33)
 - `API_HOST`/`API_PORT`: API server address (default: `0.0.0.0:8000`)
 - `SPRAY_PUMP_PIN`, `FLOW_SENSOR_PIN`: GPIO pins for hardware
 - `LOG_LEVEL`: Logging verbosity (INFO, DEBUG, WARNING, ERROR)
@@ -174,7 +174,7 @@ ws.onmessage = (event) => {
 ## Troubleshooting
 
 ### Connection Issues
-1. Check serial port: `ls -la /dev/ttyAMA0`
+1. Check serial port: `ls -la /dev/serial1`
 2. Verify Pixhawk is powered and connected
 3. Check baud rate in `.env` matches Pixhawk config
 4. View logs: `tail -f /var/log/drone-companion.log`

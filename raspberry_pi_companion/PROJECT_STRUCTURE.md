@@ -152,7 +152,7 @@ Environment variables in `.env`:
 
 ```ini
 # MAVLink Connection
-MAVLINK_PORT=/dev/ttyAMA0              # Serial port
+MAVLINK_PORT=/dev/serial1              # Serial port (use /dev/serial1 for Pi pins 32/33)
 MAVLINK_BAUDRATE=57600                 # Baud rate
 MAVLINK_TIMEOUT=30                     # Connection timeout (sec)
 
