@@ -6,9 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/agri_dronesetup/raspberry_pi_companion
-Environment="PATH=/home/pi/agri_dronesetup/raspberry_pi_companion/venv/bin"
-ExecStart=/home/pi/agri_dronesetup/raspberry_pi_companion/venv/bin/python main.py
+WorkingDirectory=/home/pi/PixhawkRaspPi/raspberry_pi_companion
+Environment="PATH=/home/pi/PixhawkRaspPi/raspberry_pi_companion/venv/bin"
+ExecStart=/home/pi/PixhawkRaspPi/raspberry_pi_companion/venv/bin/python main.py
 Restart=always
 RestartSec=10
 StandardOutput=journal

@@ -9,6 +9,7 @@ import collections.abc
 import logging
 import time
 import threading
+from collections import deque
 from typing import Optional, Callable
 
 # Compatibility shim for older DroneKit releases on Python 3.10+.
@@ -41,6 +42,8 @@ class ConnectionManager:
         self._connection_thread = None
         self._callbacks = {}
         self._lock = threading.Lock()
+        self._prearm_messages = deque(maxlen=20)
+        self._last_status_text = None
 
     def connect(self) -> bool:
         """
@@ -92,7 +95,8 @@ class ConnectionManager:
                     connect_kwargs["baud"] = self.config.baudrate
 
                 self.vehicle = connect(connection_string, **connect_kwargs)
-            
+
+            self._register_status_text_listener()
             logger.info("Successfully connected to Pixhawk")
             self.connected = True
             self._trigger_callback('connected')
@@ -110,6 +114,10 @@ class ConnectionManager:
     def disconnect(self):
         """Disconnect from Pixhawk"""
         if self.vehicle:
+            try:
+                self.vehicle.remove_message_listener('STATUSTEXT', self._handle_status_text)
+            except Exception:
+                pass
             self.vehicle.close()
             self.vehicle = None
         self.connected = False
@@ -132,6 +140,40 @@ class ConnectionManager:
             return f"tcp:{self.config.udp_ip}:{self.config.udp_port}"
 
         raise ValueError(f"Unknown connection type: {self.config.connection_type}")
+
+    def _register_status_text_listener(self):
+        """Track autopilot status text, including ArduPilot pre-arm failures."""
+        if not self.vehicle:
+            return
+
+        try:
+            self.vehicle.add_message_listener('STATUSTEXT', self._handle_status_text)
+        except Exception as e:
+            logger.warning(f"Unable to register STATUSTEXT listener: {str(e)}")
+
+    def _handle_status_text(self, vehicle, name, message):
+        """Store recent STATUSTEXT messages that explain pre-arm readiness."""
+        try:
+            text = getattr(message, "text", "")
+            if isinstance(text, bytes):
+                text = text.decode("utf-8", errors="replace")
+            text = str(text).strip().rstrip("\x00")
+            if not text:
+                return
+
+            entry = {
+                "timestamp": time.time(),
+                "severity": getattr(message, "severity", None),
+                "text": text,
+            }
+
+            with self._lock:
+                self._last_status_text = entry
+                lowered = text.lower()
+                if "prearm" in lowered or "pre-arm" in lowered:
+                    self._prearm_messages.append(entry)
+        except Exception as e:
+            logger.debug(f"Failed to process STATUSTEXT message: {str(e)}")
 
     def _start_monitor_thread(self):
         """Start background thread to monitor connection health"""
@@ -387,6 +429,41 @@ class ConnectionManager:
                     logger.error(f"Error in callback for {event}: {str(e)}")
 
     # Telemetry Access
+
+    def get_prearm_status(self) -> dict:
+        """Get current pre-arm readiness and recent pre-arm failure messages."""
+        if not self.vehicle:
+            return {}
+
+        try:
+            with self._lock:
+                prearm_messages = list(self._prearm_messages)
+                last_status_text = self._last_status_text
+
+            gps = getattr(self.vehicle, "gps_0", None)
+            gps_status = None
+            if gps:
+                gps_status = {
+                    "fix_type": getattr(gps, "fix_type", None),
+                    "satellites_visible": getattr(gps, "satellites_visible", None),
+                    "eph": getattr(gps, "eph", None),
+                    "epv": getattr(gps, "epv", None),
+                }
+
+            return {
+                "connected": self.connected,
+                "is_armable": self.vehicle.is_armable,
+                "armed": self.vehicle.armed,
+                "mode": self.vehicle.mode.name,
+                "system_status": self.vehicle.system_status.state,
+                "gps": gps_status,
+                "ekf_ok": getattr(self.vehicle, "ekf_ok", None),
+                "last_status_text": last_status_text,
+                "prearm_messages": prearm_messages,
+            }
+        except Exception as e:
+            logger.error(f"Error getting pre-arm status: {str(e)}")
+            return {}
 
     def get_vehicle_state(self) -> dict:
         """Get current vehicle state"""

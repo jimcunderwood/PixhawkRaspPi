@@ -32,6 +32,7 @@ nano .env
 # Minimal required changes:
 # MAVLINK_PORT=/dev/serial0
 # API_HOST=0.0.0.0
+# API_KEY=<long random token>
 # SPRAY_PUMP_PIN=17 (or your GPIO pin)
 ```
 
@@ -58,13 +59,22 @@ From another terminal or your PC:
 curl http://<raspberry-pi-ip>:8000/health
 
 # Get vehicle status
-curl http://<raspberry-pi-ip>:8000/api/vehicle/status
+curl -H "x-api-key: <your-api-key>" \
+  http://<raspberry-pi-ip>:8000/api/vehicle/status
+
+# Get pre-arm readiness
+curl -H "x-api-key: <your-api-key>" \
+  http://<raspberry-pi-ip>:8000/api/vehicle/prearm
 
 # Add test waypoint
 curl -X POST http://<raspberry-pi-ip>:8000/api/mission/add-waypoint \
   -H "Content-Type: application/json" \
+  -H "x-api-key: <your-api-key>" \
   -d '{"latitude": 40.7128, "longitude": -74.0060, "altitude": 50}'
 ```
+
+Swagger API docs are available at `http://<raspberry-pi-ip>:8000/docs`.
+Use the **Authorize** button and enter your `API_KEY`.
 
 ### 5. Run as Service (Optional)
 
@@ -82,12 +92,14 @@ sudo systemctl start drone-companion
 import requests
 
 requests.post('http://localhost:8000/api/vehicle/arm', 
+              headers={'x-api-key': '<your-api-key>'},
               json={'arm': True})
 ```
 
 ### Takeoff
 ```python
 requests.post('http://localhost:8000/api/vehicle/takeoff',
+              headers={'x-api-key': '<your-api-key>'},
               json={'altitude': 30.0})  # 30 meters
 ```
 
@@ -96,6 +108,7 @@ requests.post('http://localhost:8000/api/vehicle/takeoff',
 # Add waypoints
 for i in range(5):
     requests.post('http://localhost:8000/api/mission/add-waypoint',
+                  headers={'x-api-key': '<your-api-key>'},
                   json={
                     'latitude': 40.7128 + i*0.001,
                     'longitude': -74.0060 + i*0.001,
@@ -103,21 +116,25 @@ for i in range(5):
                   })
 
 # Start mission
-requests.post('http://localhost:8000/api/mission/start')
+requests.post('http://localhost:8000/api/mission/start',
+              headers={'x-api-key': '<your-api-key>'})
 ```
 
 ### Control Spray
 ```python
 # Start spray
 requests.post('http://localhost:8000/api/payload/control',
+              headers={'x-api-key': '<your-api-key>'},
               json={'action': 'spray_start'})
 
 # Stop spray
 requests.post('http://localhost:8000/api/payload/control',
+              headers={'x-api-key': '<your-api-key>'},
               json={'action': 'spray_stop'})
 
 # Get status
-response = requests.get('http://localhost:8000/api/payload/status')
+response = requests.get('http://localhost:8000/api/payload/status',
+                        headers={'x-api-key': '<your-api-key>'})
 status = response.json()
 print(f"Spray time: {status['data']['spray_pump']['total_on_time']} seconds")
 ```
@@ -133,7 +150,7 @@ def on_message(ws, message):
           f"Battery: {data['battery']['level']}%")
 
 ws = websocket.WebSocketApp(
-    "ws://localhost:8000/ws/telemetry",
+    "ws://localhost:8000/ws/telemetry?api_key=<your-api-key>",
     on_message=on_message
 )
 ws.run_forever()

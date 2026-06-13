@@ -44,6 +44,8 @@ nano .env
 Key configuration options:
 - `MAVLINK_PORT`: Serial port for Pixhawk (e.g. `/dev/serial0` for Pi pins 32/33)
 - `API_HOST`/`API_PORT`: API server address (default: `0.0.0.0:8000`)
+- `API_KEY`: Shared API key required by protected REST and WebSocket endpoints
+- `CORS_ORIGINS`: Comma-separated browser origins allowed to call the API
 - `SPRAY_PUMP_PIN`, `FLOW_SENSOR_PIN`: GPIO pins for hardware
 - `LOG_LEVEL`: Logging verbosity (INFO, DEBUG, WARNING, ERROR)
 
@@ -54,6 +56,16 @@ python main.py
 ```
 
 ## API Documentation
+
+Interactive Swagger documentation is available at:
+
+```
+http://<raspberry-pi-ip>:8000/docs
+```
+
+Click **Authorize** and enter the configured `API_KEY`. Protected REST endpoints
+also accept the key in the `x-api-key` header. The telemetry WebSocket accepts
+either an `x-api-key` header or an `api_key` query parameter.
 
 ### Health Check
 ```
@@ -68,6 +80,7 @@ POST /api/vehicle/land             - Land drone
 POST /api/vehicle/goto             - Fly to GPS location
 POST /api/vehicle/mode             - Change flight mode
 GET  /api/vehicle/status           - Get vehicle state
+GET  /api/vehicle/prearm           - Get pre-arm readiness and messages
 ```
 
 ### Mission Planning

@@ -5,7 +5,6 @@ Handles connection settings, hardware configuration, and operational parameters
 
 import os
 from enum import Enum
-from typing import Optional
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
@@ -17,6 +16,14 @@ def _parse_connection_type(value: str) -> 'ConnectionType':
         return ConnectionType(value.strip().lower())
     except Exception:
         return ConnectionType.SERIAL
+
+
+def _parse_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_csv(value: str) -> list:
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 class ConnectionType(Enum):
@@ -45,22 +52,24 @@ class APIConfig:
     """REST API configuration"""
     host: str = os.getenv("API_HOST", "0.0.0.0")
     port: int = int(os.getenv("API_PORT", "8000"))
-    debug: bool = os.getenv("API_DEBUG", "False").lower() == "true"
+    debug: bool = _parse_bool(os.getenv("API_DEBUG", "False"))
+    api_key: str = os.getenv("API_KEY", "")
+    auth_enabled: bool = _parse_bool(os.getenv("API_AUTH_ENABLED", "True"))
     cors_origins: list = None
 
     def __post_init__(self):
         if self.cors_origins is None:
-            self.cors_origins = ["*"]
+            self.cors_origins = _parse_csv(os.getenv("CORS_ORIGINS", "*")) or ["*"]
 
 
 @dataclass
 class PayloadConfig:
     """Payload hardware configuration"""
     spray_pump_pin: int = int(os.getenv("SPRAY_PUMP_PIN", "17"))
-    camera_enabled: bool = os.getenv("CAMERA_ENABLED", "True").lower() == "true"
+    camera_enabled: bool = _parse_bool(os.getenv("CAMERA_ENABLED", "True"))
     camera_port: int = int(os.getenv("CAMERA_PORT", "0"))
     flow_sensor_pin: int = int(os.getenv("FLOW_SENSOR_PIN", "27"))
-    flow_sensor_enabled: bool = os.getenv("FLOW_SENSOR_ENABLED", "True").lower() == "true"
+    flow_sensor_enabled: bool = _parse_bool(os.getenv("FLOW_SENSOR_ENABLED", "True"))
 
 
 @dataclass

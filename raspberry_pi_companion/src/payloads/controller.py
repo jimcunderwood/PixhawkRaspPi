@@ -235,14 +235,15 @@ class CameraController:
         self.total_photos = 0
         self.total_video_time = 0.0
         self._camera = None
+        self._video_writer = None
         self._record_start = None
         self._lock = threading.Lock()
 
         try:
             import cv2
             self.cv2 = cv2
-            self.camera = cv2.VideoCapture(camera_id)
-            if not self.camera.isOpened():
+            self._camera = cv2.VideoCapture(camera_id)
+            if not self._camera.isOpened():
                 logger.warning(f"Camera {camera_id} not found")
             else:
                 logger.info(f"Camera {camera_id} initialized")
@@ -303,7 +304,8 @@ class CameraController:
             with self._lock:
                 if self._video_writer:
                     self._video_writer.release()
-                
+                    self._video_writer = None
+
                 if self._record_start:
                     self.total_video_time += time.time() - self._record_start
                     self._record_start = None
