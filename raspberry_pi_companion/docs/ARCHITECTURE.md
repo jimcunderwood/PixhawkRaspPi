@@ -286,7 +286,7 @@ Environment variables in `.env`:
 
 ```
 [MAVLink]
-MAVLINK_PORT=/dev/serial1        # Serial port or UDP config
+MAVLINK_PORT=/dev/serial0        # Serial port or UDP config
 MAVLINK_BAUDRATE=57600
 MAVLINK_TIMEOUT=30
 

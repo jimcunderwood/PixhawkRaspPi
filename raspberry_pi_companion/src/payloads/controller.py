@@ -116,17 +116,36 @@ class FlowSensor:
         self.last_flow_rate = 0.0  # L/min
         self._lock = threading.Lock()
         self._monitoring = False
+        self.GPIO = None
+        self._available = False
 
         try:
             import RPi.GPIO as GPIO
             self.GPIO = GPIO
             self.GPIO.setmode(GPIO.BCM)
-            self.GPIO.setup(self.gpio_pin, GPIO.IN)
-            self.GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._pulse_callback)
-            logger.info(f"Flow sensor initialized on GPIO pin {gpio_pin}")
+            self.GPIO.setup(self.gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            try:
+                self.GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._pulse_callback)
+            except Exception as e:
+                logger.warning(
+                    "Flow sensor GPIO event detection failed for pin %s: %s. "
+                    "Disabling flow sensor.",
+                    self.gpio_pin,
+                    str(e)
+                )
+                self.GPIO = None
+                self._available = False
+            else:
+                self._available = True
+                logger.info(f"Flow sensor initialized on GPIO pin {gpio_pin}")
         except ImportError:
             logger.warning("RPi.GPIO not available - using mock mode")
             self.GPIO = None
+            self._available = False
+        except Exception as e:
+            logger.error(f"Failed to initialize flow sensor on GPIO pin {gpio_pin}: {str(e)}")
+            self.GPIO = None
+            self._available = False
 
     def _pulse_callback(self, channel):
         """Callback for pulse detection"""
@@ -135,6 +154,10 @@ class FlowSensor:
 
     def start_monitoring(self):
         """Start flow monitoring"""
+        if self.GPIO is None:
+            logger.warning("Flow sensor monitoring disabled because GPIO is unavailable")
+            return
+
         self._monitoring = True
         self._monitor_thread = threading.Thread(
             target=self._monitor_loop,
@@ -197,6 +220,10 @@ class FlowSensor:
                 self.GPIO.cleanup(self.gpio_pin)
         except Exception as e:
             logger.error(f"Error in flow sensor cleanup: {str(e)}")
+
+    def is_available(self) -> bool:
+        """Return whether the flow sensor is ready for use."""
+        return self._available
 
 
 class CameraController:
@@ -322,7 +349,18 @@ class PayloadController:
 
     def __init__(self, config):
         self.spray_pump = SprayPump(config.spray_pump_pin)
-        self.flow_sensor = FlowSensor(config.flow_sensor_pin) if config.flow_sensor_enabled else None
+        self.flow_sensor = None
+
+        if config.flow_sensor_enabled:
+            flow_sensor = FlowSensor(config.flow_sensor_pin)
+            if flow_sensor.is_available():
+                self.flow_sensor = flow_sensor
+            else:
+                logger.warning(
+                    "Flow sensor on GPIO pin %s is unavailable and has been disabled.",
+                    config.flow_sensor_pin,
+                )
+
         self.camera = CameraController() if config.camera_enabled else None
 
     def arm_spray(self) -> bool:

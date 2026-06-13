@@ -222,7 +222,7 @@ Environment variables (`.env`):
 
 ```ini
 # MAVLink Connection
-MAVLINK_PORT=/dev/ttyAMA0
+MAVLINK_PORT=/dev/serial0
 MAVLINK_BAUDRATE=57600
 MAVLINK_TIMEOUT=30
 

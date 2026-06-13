@@ -4,10 +4,25 @@ Handles connections to Pixhawk via serial, UDP, or TCP
 Provides high-level vehicle control abstraction
 """
 
+import collections
+import collections.abc
 import logging
 import time
 import threading
 from typing import Optional, Callable
+
+# Compatibility shim for older DroneKit releases on Python 3.10+.
+# DroneKit still imports `collections.MutableMapping` and similar names,
+# which were moved into `collections.abc` in newer Python versions.
+if not hasattr(collections, "MutableMapping"):
+    collections.MutableMapping = collections.abc.MutableMapping
+if not hasattr(collections, "Mapping"):
+    collections.Mapping = collections.abc.Mapping
+if not hasattr(collections, "Iterable"):
+    collections.Iterable = collections.abc.Iterable
+if not hasattr(collections, "Sequence"):
+    collections.Sequence = collections.abc.Sequence
+
 from dronekit import connect, Vehicle
 from pymavlink.dialects.v20 import ardupilotmega as mavutil
 
@@ -38,6 +53,12 @@ class ConnectionManager:
             logger.info(f"Connecting to Pixhawk via {self.config.connection_type.value}...")
             
             connection_string = self._build_connection_string()
+            logger.debug(
+                "MAVLink connect: %s, baud=%s, timeout=%s",
+                connection_string,
+                self.config.baudrate,
+                self.config.timeout,
+            )
 
             # For remote UDP-out connections PyMAVLink handles the socket semantics
             # more predictably than DroneKit's high-level connect wrapper. Create
@@ -63,11 +84,14 @@ class ConnectionManager:
 
                 self.vehicle = vehicle
             else:
-                self.vehicle = connect(
-                    connection_string,
-                    wait_ready=True,
-                    timeout=self.config.timeout
-                )
+                connect_kwargs = {
+                    "wait_ready": True,
+                    "timeout": self.config.timeout,
+                }
+                if self.config.connection_type == ConnectionType.SERIAL:
+                    connect_kwargs["baud"] = self.config.baudrate
+
+                self.vehicle = connect(connection_string, **connect_kwargs)
             
             logger.info("Successfully connected to Pixhawk")
             self.connected = True

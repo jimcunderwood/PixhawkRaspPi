@@ -59,8 +59,8 @@ dtoverlay=uart1
 ### 2. Disable Serial Login
 
 ```bash
-sudo systemctl stop serial-getty@serial1.service || true
-sudo systemctl disable serial-getty@serial1.service || true
+sudo systemctl stop serial-getty@serial0.service || true
+sudo systemctl disable serial-getty@serial0.service || true
 ```
 
 ### 3. Grant GPIO Access
@@ -78,13 +78,13 @@ sudo reboot
 ### 4. Verify Serial Port
 
 ```bash
-ls -la /dev/serial1
+ls -la /dev/serial0
 # Should show: crw-rw---- 1 root dialout
 ```
 
 Test connection:
 ```bash
-cat /dev/serial1  # Should show telemetry data from Pixhawk
+cat /dev/serial0  # Should show telemetry data from Pixhawk
 ```
 
 ## Software Installation
@@ -105,7 +105,7 @@ nano .env
 ```
 
 Edit key settings:
-- `MAVLINK_PORT=/dev/serial1` (or `/dev/ttyUSB0` if using USB)
+- `MAVLINK_PORT=/dev/serial0` (or `/dev/ttyUSB0` if using USB)
 - `API_HOST=0.0.0.0` (accessible from network)
 - `API_PORT=8000`
 - Hardware pins match your wiring
@@ -250,7 +250,7 @@ ls /dev/tty*      # List all tty devices
 
 **Permission denied**:
 ```bash
-sudo chmod 666 /dev/serial1
+sudo chmod 666 /dev/serial0
 # Or better: add user to dialout group and reboot
 ```
 
@@ -276,7 +276,7 @@ sudo journalctl -n 50  # Last 50 log lines
 
 2. Test with Arduino IDE or minicom:
    ```bash
-   minicom -b 57600 -o -D /dev/serial1
+   minicom -b 57600 -o -D /dev/serial0
    ```
 
 3. Check Pixhawk TELEM1 settings in Mission Planner

@@ -22,16 +22,17 @@ sudo apt-get install -y \
 
 # Install system dependencies
 echo "Installing system dependencies..."
-sudo apt-get install -y \
-    git \
-    curl \
-    libssl-dev \
-    libffi-dev \
-    libjpeg-dev \
-    zlib1g-dev \
-    libatlas-base-dev \
-    libharfbuzz0b \
-    libtiff5
+sudo apt-get update && sudo apt-get install -y \
+  git \
+  curl \
+  libssl-dev \
+  libffi-dev \
+  libjpeg-dev \
+  zlib1g-dev \
+  libopenblas-dev \
+  libharfbuzz0b \
+  libtiff-dev
+
 
 # Enable serial interface for Pixhawk communication (Raspberry Pi only)
 if command -v raspi-config &> /dev/null; then
@@ -55,8 +56,8 @@ pip install --upgrade pip setuptools wheel
 echo "Installing Python requirements..."
 pip install -r requirements.txt
 
-# Fix dronekit Python 3.10 compatibility issue
-echo "Patching dronekit for Python 3.10..."
+# Fix dronekit Python 3.10+ compatibility issue
+echo "Patching dronekit for Python 3.10+..."
 DRONEKIT_PATH=$(python -c "import dronekit; import os; print(os.path.dirname(dronekit.__file__))")
 if [ -f "$DRONEKIT_PATH/__init__.py" ]; then
     sed -i 's/collections\.MutableMapping/collections.abc.MutableMapping/g' "$DRONEKIT_PATH/__init__.py"

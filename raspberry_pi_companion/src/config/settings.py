@@ -32,7 +32,7 @@ class MAVLinkConfig:
     connection_type: ConnectionType = _parse_connection_type(
         os.getenv("MAVLINK_CONNECTION_TYPE", "serial")
     )
-    port: str = os.getenv("MAVLINK_PORT", "/dev/serial1")
+    port: str = os.getenv("MAVLINK_PORT", "/dev/serial0")
     baudrate: int = int(os.getenv("MAVLINK_BAUDRATE", "57600"))
     udp_ip: str = os.getenv("MAVLINK_UDP_IP", "127.0.0.1")
     udp_port: int = int(os.getenv("MAVLINK_UDP_PORT", "14550"))
