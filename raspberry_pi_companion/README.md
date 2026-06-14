@@ -117,10 +117,8 @@ WS   /ws/telemetry                 - WebSocket live stream
 To run as a systemd service:
 
 ```bash
-sudo cp docs/drone-companion.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable drone-companion
-sudo systemctl start drone-companion
+chmod +x install_service.sh
+./install_service.sh
 ```
 
 Check status:

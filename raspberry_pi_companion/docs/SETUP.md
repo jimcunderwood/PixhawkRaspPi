@@ -168,32 +168,17 @@ sudo ufw allow 8000/udp
 
 ## Running as Service
 
-### 1. Create Systemd Service
+### 1. Install and Enable Systemd Service
 
 ```bash
-sudo cp docs/drone-companion.service /etc/systemd/system/
+chmod +x install_service.sh
+./install_service.sh
 ```
 
-### 2. Configure Paths
+The installer writes `/etc/systemd/system/drone-companion.service` with the
+correct path for your checkout, enables it for reboot, and starts it now.
 
-Edit service file to match your installation:
-```bash
-sudo nano /etc/systemd/system/drone-companion.service
-```
-
-Change paths if not using default:
-- `WorkingDirectory=/home/pi/agri_dronesetup/raspberry_pi_companion`
-- Environment PATH
-
-### 3. Enable and Start
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable drone-companion
-sudo systemctl start drone-companion
-```
-
-### 4. Verify Service
+### 2. Verify Service
 
 ```bash
 sudo systemctl status drone-companion
