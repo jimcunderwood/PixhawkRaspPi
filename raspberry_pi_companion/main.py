@@ -11,7 +11,10 @@ import uvicorn
 
 from src.config.settings import config
 from src.mavlink.connection_manager import ConnectionManager
-from src.missions.planner import MissionPlanner
+from src.missions.planner import (
+    NavigationConfig,
+    MissionPlanner,
+)
 from src.payloads.controller import PayloadController
 from src.telemetry.collector import TelemetryManager
 from src.api.server import ServerAPI
@@ -22,6 +25,36 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _startup_navigation_config() -> NavigationConfig:
+    """Build persisted mission navigation defaults from environment settings."""
+    return NavigationConfig.from_dict(
+        {
+            "obstacle_avoidance": {
+                "enabled": config.mission.obstacle_avoidance_enabled,
+                "mode": config.mission.obstacle_avoidance_mode,
+                "margin_meters": config.mission.obstacle_avoidance_margin_meters,
+                "lookahead_meters": config.mission.obstacle_avoidance_lookahead_meters,
+                "backup_speed_mps": config.mission.obstacle_avoidance_backup_speed_mps,
+                "min_altitude_meters": config.mission.obstacle_avoidance_min_altitude_meters,
+                "proximity_type": config.mission.obstacle_avoidance_proximity_type,
+                "behavior": config.mission.obstacle_avoidance_behavior,
+                "bendy_ruler_type": config.mission.obstacle_avoidance_bendy_ruler_type,
+                "obstacle_database_size": config.mission.obstacle_database_size,
+            },
+            "terrain_following": {
+                "enabled": config.payload.terrain_following_enabled,
+                "source": config.payload.terrain_sensor_source,
+                "min_agl_meters": config.payload.terrain_min_agl_meters,
+                "max_agl_meters": config.payload.terrain_max_agl_meters,
+                "target_agl_meters": config.mission.terrain_target_agl_meters,
+                "use_rangefinder_for_waypoints": config.mission.terrain_use_rangefinder_for_waypoints,
+                "rtl_terrain_enabled": config.mission.terrain_rtl_enabled,
+                "terrain_spacing_meters": config.mission.terrain_spacing_meters,
+            },
+        }
+    )
 
 
 class CompanionComputer:
@@ -50,7 +83,11 @@ class CompanionComputer:
 
             # Initialize mission planner
             logger.info("Initializing mission planner...")
-            self.mission_planner = MissionPlanner(config.mission.max_waypoints)
+            self.mission_planner = MissionPlanner(
+                config.mission.max_waypoints,
+                config.mission.storage_file,
+                navigation_config=_startup_navigation_config(),
+            )
 
             # Initialize payload controller
             logger.info("Initializing payload controller...")

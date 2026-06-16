@@ -26,6 +26,20 @@ def _parse_csv(value: str) -> list:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _parse_optional_int(value: str) -> int | None:
+    value = value.strip()
+    if not value:
+        return None
+    return int(value)
+
+
+def _parse_optional_float(value: str) -> float | None:
+    value = value.strip()
+    if not value:
+        return None
+    return float(value)
+
+
 class ConnectionType(Enum):
     """MAVLink connection types"""
     SERIAL = "serial"
@@ -55,6 +69,16 @@ class APIConfig:
     debug: bool = _parse_bool(os.getenv("API_DEBUG", "False"))
     api_key: str = os.getenv("API_KEY", "")
     auth_enabled: bool = _parse_bool(os.getenv("API_AUTH_ENABLED", "True"))
+    safety_gates_enabled: bool = _parse_bool(os.getenv("SAFETY_GATES_ENABLED", "True"))
+    command_authority_enabled: bool = _parse_bool(os.getenv("COMMAND_AUTHORITY_ENABLED", "True"))
+    command_authority_lease_seconds: int = int(os.getenv("COMMAND_AUTHORITY_LEASE_SECONDS", "30"))
+    telemetry_freshness_enabled: bool = _parse_bool(os.getenv("TELEMETRY_FRESHNESS_ENABLED", "True"))
+    telemetry_stale_seconds: float = float(os.getenv("TELEMETRY_STALE_SECONDS", "3"))
+    payload_stale_seconds: float = float(os.getenv("PAYLOAD_STALE_SECONDS", "3"))
+    audit_log_file: str = os.getenv(
+        "AUDIT_LOG_FILE",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "audit", "events.jsonl"),
+    )
     cors_origins: list = None
 
     def __post_init__(self):
@@ -68,18 +92,90 @@ class PayloadConfig:
     spray_pump_pin: int = int(os.getenv("SPRAY_PUMP_PIN", "17"))
     camera_enabled: bool = _parse_bool(os.getenv("CAMERA_ENABLED", "True"))
     camera_port: int = int(os.getenv("CAMERA_PORT", "0"))
+    camera_trigger_enabled: bool = _parse_bool(os.getenv("CAMERA_TRIGGER_ENABLED", "False"))
+    camera_trigger_pin: int = int(os.getenv("CAMERA_TRIGGER_PIN", "22"))
+    camera_trigger_pulse_ms: int = int(os.getenv("CAMERA_TRIGGER_PULSE_MS", "100"))
+    data_directory: str = os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion")
+    photo_directory: str = os.getenv(
+        "PHOTO_DIRECTORY",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "photos"),
+    )
+    spray_session_directory: str = os.getenv(
+        "SPRAY_SESSION_DIRECTORY",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "spray-sessions"),
+    )
     flow_sensor_pin: int = int(os.getenv("FLOW_SENSOR_PIN", "27"))
     flow_sensor_enabled: bool = _parse_bool(os.getenv("FLOW_SENSOR_ENABLED", "True"))
+    flow_sensor_pulses_per_liter: float = float(os.getenv("FLOW_SENSOR_PULSES_PER_LITER", "450"))
+    pressure_sensor_enabled: bool = _parse_bool(os.getenv("PRESSURE_SENSOR_ENABLED", "False"))
+    pressure_sensor_source: str = os.getenv("PRESSURE_SENSOR_SOURCE", "adc").strip().lower()
+    pressure_sensor_pin: int | None = _parse_optional_int(os.getenv("PRESSURE_SENSOR_PIN", ""))
+    pressure_sensor_adc_channel: int = int(os.getenv("PRESSURE_SENSOR_ADC_CHANNEL", "0"))
+    pressure_sensor_min_voltage: float = float(os.getenv("PRESSURE_SENSOR_MIN_VOLTAGE", "0.5"))
+    pressure_sensor_max_voltage: float = float(os.getenv("PRESSURE_SENSOR_MAX_VOLTAGE", "4.5"))
+    pressure_sensor_min_psi: float = float(os.getenv("PRESSURE_SENSOR_MIN_PSI", "0"))
+    pressure_sensor_max_psi: float = float(os.getenv("PRESSURE_SENSOR_MAX_PSI", "150"))
+    tank_level_sensor_enabled: bool = _parse_bool(os.getenv("TANK_LEVEL_SENSOR_ENABLED", "False"))
+    tank_level_sensor_source: str = os.getenv("TANK_LEVEL_SENSOR_SOURCE", "adc").strip().lower()
+    tank_level_sensor_pin: int | None = _parse_optional_int(os.getenv("TANK_LEVEL_SENSOR_PIN", ""))
+    tank_level_sensor_adc_channel: int = int(os.getenv("TANK_LEVEL_SENSOR_ADC_CHANNEL", "1"))
+    tank_level_sensor_min_voltage: float = float(os.getenv("TANK_LEVEL_SENSOR_MIN_VOLTAGE", "0.5"))
+    tank_level_sensor_max_voltage: float = float(os.getenv("TANK_LEVEL_SENSOR_MAX_VOLTAGE", "4.5"))
+    tank_capacity_liters: float = float(os.getenv("TANK_CAPACITY_LITERS", "10"))
+    tank_min_level_percent: float = float(os.getenv("TANK_MIN_LEVEL_PERCENT", "10"))
+    rtk_enabled: bool = _parse_bool(os.getenv("RTK_ENABLED", "False"))
+    rtk_correction_port: str = os.getenv("RTK_CORRECTION_PORT", "/dev/ttyUSB0")
+    rtk_correction_baudrate: int = int(os.getenv("RTK_CORRECTION_BAUDRATE", "115200"))
+    ppk_enabled: bool = _parse_bool(os.getenv("PPK_ENABLED", "False"))
+    ppk_log_directory: str = os.getenv(
+        "PPK_LOG_DIRECTORY",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "ppk"),
+    )
+    spray_application_record_directory: str = os.getenv(
+        "SPRAY_APPLICATION_RECORD_DIRECTORY",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "application-records"),
+    )
+    terrain_following_enabled: bool = _parse_bool(os.getenv("TERRAIN_FOLLOWING_ENABLED", "False"))
+    terrain_sensor_source: str = os.getenv("TERRAIN_SENSOR_SOURCE", "rangefinder").strip().lower()
+    terrain_sensor_pin: int | None = _parse_optional_int(os.getenv("TERRAIN_SENSOR_PIN", ""))
+    terrain_min_agl_meters: float = float(os.getenv("TERRAIN_MIN_AGL_METERS", "2"))
+    terrain_max_agl_meters: float = float(os.getenv("TERRAIN_MAX_AGL_METERS", "120"))
 
 
 @dataclass
 class MissionConfig:
     """Mission planning configuration"""
+    data_directory: str = os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion")
+    storage_file: str = os.getenv(
+        "MISSION_FILE",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "missions", "mission.json"),
+    )
     max_waypoints: int = int(os.getenv("MAX_WAYPOINTS", "100"))
     min_altitude: float = float(os.getenv("MIN_ALTITUDE", "5"))  # meters
     max_altitude: float = float(os.getenv("MAX_ALTITUDE", "120"))  # meters
     default_airspeed: float = float(os.getenv("DEFAULT_AIRSPEED", "5"))  # m/s
     loiter_radius: float = float(os.getenv("LOITER_RADIUS", "50"))  # meters
+    obstacle_avoidance_enabled: bool = _parse_bool(os.getenv("OBSTACLE_AVOIDANCE_ENABLED", "False"))
+    obstacle_avoidance_mode: str = os.getenv("OBSTACLE_AVOIDANCE_MODE", "simple").strip().lower()
+    obstacle_avoidance_margin_meters: float = float(os.getenv("OBSTACLE_AVOIDANCE_MARGIN_METERS", "2"))
+    obstacle_avoidance_lookahead_meters: float = float(os.getenv("OBSTACLE_AVOIDANCE_LOOKAHEAD_METERS", "5"))
+    obstacle_avoidance_backup_speed_mps: float = float(os.getenv("OBSTACLE_AVOIDANCE_BACKUP_SPEED_MPS", "0"))
+    obstacle_avoidance_min_altitude_meters: float = float(os.getenv("OBSTACLE_AVOIDANCE_MIN_ALTITUDE_METERS", "0"))
+    obstacle_avoidance_proximity_type: int | None = _parse_optional_int(
+        os.getenv("OBSTACLE_AVOIDANCE_PROXIMITY_TYPE", "4")
+    )
+    obstacle_avoidance_behavior: str = os.getenv("OBSTACLE_AVOIDANCE_BEHAVIOR", "slide").strip().lower()
+    obstacle_avoidance_bendy_ruler_type: str = os.getenv(
+        "OBSTACLE_AVOIDANCE_BENDY_RULER_TYPE",
+        "horizontal",
+    ).strip().lower()
+    obstacle_database_size: int | None = _parse_optional_int(os.getenv("OBSTACLE_DATABASE_SIZE", ""))
+    terrain_target_agl_meters: float | None = _parse_optional_float(os.getenv("TERRAIN_TARGET_AGL_METERS", ""))
+    terrain_use_rangefinder_for_waypoints: bool = _parse_bool(
+        os.getenv("TERRAIN_USE_RANGEFINDER_FOR_WAYPOINTS", "True")
+    )
+    terrain_rtl_enabled: bool = _parse_bool(os.getenv("TERRAIN_RTL_ENABLED", "False"))
+    terrain_spacing_meters: float | None = _parse_optional_float(os.getenv("TERRAIN_SPACING_METERS", ""))
 
 
 @dataclass

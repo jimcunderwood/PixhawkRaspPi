@@ -7,6 +7,7 @@ Python application for Raspberry Pi 4 connected to Pixhawk 4 flight controller.
 - **MAVLink Communication**: Full MAVLink v2 protocol support for drone control
 - **Mission Planning**: Waypoint-based missions with field boundaries
 - **Live Telemetry**: Real-time vehicle state, GPS, battery, and attitude data
+- **Navigation Safety**: Configurable obstacle avoidance and terrain-following support
 - **Payload Control**: Spray pump, camera (photo/video), flow sensor
 - **REST API**: Complete RESTful interface for ground station integration
 - **WebSocket Streaming**: Live telemetry streaming to multiple clients
@@ -47,6 +48,8 @@ Key configuration options:
 - `API_KEY`: Shared API key required by protected REST and WebSocket endpoints
 - `CORS_ORIGINS`: Comma-separated browser origins allowed to call the API
 - `SPRAY_PUMP_PIN`, `FLOW_SENSOR_PIN`: GPIO pins for hardware
+- `OBSTACLE_AVOIDANCE_*`: ArduPilot simple/BendyRuler avoidance defaults
+- `TERRAIN_*`: Terrain following source, AGL limits, and waypoint/RTL behavior
 - `LOG_LEVEL`: Logging verbosity (INFO, DEBUG, WARNING, ERROR)
 
 ### 4. Test the connection
@@ -67,48 +70,73 @@ Click **Authorize** and enter the configured `API_KEY`. Protected REST endpoints
 also accept the key in the `x-api-key` header. The telemetry WebSocket accepts
 either an `x-api-key` header or an `api_key` query parameter.
 
+Flight-control and mission-editing commands also require a command authority
+lease. Acquire one with `POST /api/v1/control/authority`, then send the returned
+token in the `x-control-token` header for protected command requests.
+
 ### Health Check
 ```
 GET /health
 ```
 
+### Command Authority
+```
+GET    /api/v1/control/authority       - Get current authority lease status
+POST   /api/v1/control/authority       - Acquire command authority
+POST   /api/v1/control/authority/renew - Renew command authority
+DELETE /api/v1/control/authority       - Release command authority
+```
+
 ### Vehicle Control
 ```
-POST /api/vehicle/arm              - Arm/disarm drone
-POST /api/vehicle/takeoff          - Takeoff to altitude
-POST /api/vehicle/land             - Land drone
-POST /api/vehicle/goto             - Fly to GPS location
-POST /api/vehicle/mode             - Change flight mode
-GET  /api/vehicle/status           - Get vehicle state
-GET  /api/vehicle/prearm           - Get pre-arm readiness and messages
+POST /api/v1/vehicle/arm              - Arm/disarm drone
+POST /api/v1/vehicle/takeoff          - Takeoff to altitude
+POST /api/v1/vehicle/land             - Land drone
+POST /api/v1/vehicle/goto             - Fly to GPS location
+POST /api/v1/vehicle/mode             - Change flight mode
+GET  /api/v1/vehicle/status           - Get vehicle state
+GET  /api/v1/vehicle/prearm           - Get pre-arm readiness and messages
 ```
 
 ### Mission Planning
 ```
-POST /api/mission/add-waypoint     - Add waypoint
-GET  /api/mission/waypoints        - Get mission waypoints
-POST /api/mission/start            - Start mission
-POST /api/mission/pause            - Pause mission
-POST /api/mission/resume           - Resume mission
-POST /api/mission/abort            - Abort mission
-POST /api/mission/clear            - Clear mission
-GET  /api/mission/stats            - Get mission statistics
+POST /api/v1/mission/add-waypoint     - Add waypoint
+GET  /api/v1/mission/waypoints        - Get mission waypoints
+POST /api/v1/mission/start            - Start mission
+POST /api/v1/mission/pause            - Pause mission
+POST /api/v1/mission/resume           - Resume mission
+POST /api/v1/mission/abort            - Abort mission
+POST /api/v1/mission/clear            - Clear mission
+GET  /api/v1/mission/stats            - Get mission statistics
 
-POST /api/field-boundaries         - Add field boundary polygon
-GET  /api/field-boundaries         - Get all field boundaries
+POST /api/v1/field-boundaries         - Add field boundary polygon
+GET  /api/v1/field-boundaries         - Get all field boundaries
 ```
+
+### Navigation Safety
+```
+GET  /api/v1/navigation/config        - Get avoidance/terrain config and Pixhawk status
+POST /api/v1/navigation/config        - Update companion navigation config
+POST /api/v1/navigation/apply         - Apply saved navigation config to Pixhawk params
+```
+
+When terrain following is enabled, new mission waypoints default to the
+`terrain` altitude frame unless a waypoint explicitly sets `altitude_frame` to
+`relative`. Obstacle avoidance uses ArduPilot's configured proximity or
+rangefinder sensors; the companion config applies the relevant Pixhawk
+parameters but does not replace ArduPilot's flight-critical avoidance logic.
 
 ### Payload Control
 ```
-POST /api/payload/control          - Control spray, camera
-GET  /api/payload/status           - Get payload status
+POST /api/v1/payload/control          - Control spray, camera
+GET  /api/v1/payload/status           - Get payload status
 ```
 
 ### Telemetry
 ```
-GET  /api/telemetry/current        - Current vehicle state
-GET  /api/telemetry/history        - Telemetry history
-GET  /api/telemetry/stats          - Statistics
+GET  /api/v1/telemetry/current        - Current vehicle state
+GET  /api/v1/telemetry/history        - Telemetry history
+GET  /api/v1/telemetry/stats          - Statistics
 WS   /ws/telemetry                 - WebSocket live stream
 ```
 
@@ -118,8 +146,12 @@ To run as a systemd service:
 
 ```bash
 chmod +x install_service.sh
-./install_service.sh
+sudo ./install_service.sh
 ```
+
+The installer copies the app to `/opt/drone-companion`, creates the
+`drone-companion` service user, prepares `/var/lib/drone-companion`, and starts
+the service.
 
 Check status:
 ```bash
@@ -141,44 +173,77 @@ import requests
 import websockets
 import json
 
+BASE_URL = 'http://localhost:8000'
+API_KEY = 'replace-with-your-api-key'
+headers = {'x-api-key': API_KEY}
+
+authority = requests.post(
+    f'{BASE_URL}/api/v1/control/authority',
+    headers=headers,
+    json={'client_id': 'example-client', 'operator': 'pilot'}
+).json()
+control_headers = {
+    **headers,
+    'x-control-token': authority['data']['authority']['token'],
+}
+
 # Get vehicle status
-response = requests.get('http://localhost:8000/api/vehicle/status')
+response = requests.get(f'{BASE_URL}/api/v1/vehicle/status', headers=headers)
 status = response.json()
 
 # Add waypoint
-requests.post('http://localhost:8000/api/mission/add-waypoint', json={
-    'latitude': 40.7128,
-    'longitude': -74.0060,
-    'altitude': 50.0
-})
+requests.post(
+    f'{BASE_URL}/api/v1/mission/add-waypoint',
+    headers=control_headers,
+    json={
+        'location': {
+            'latitude': 40.7128,
+            'longitude': -74.0060,
+            'altitude': 50.0
+        }
+    }
+)
 
 # Subscribe to live telemetry
 async def telemetry_stream():
-    async with websockets.connect('ws://localhost:8000/ws/telemetry') as ws:
+    async with websockets.connect(f'ws://localhost:8000/ws/telemetry?api_key={API_KEY}') as ws:
         async for message in ws:
             data = json.loads(message)
-            print(f"Battery: {data['battery']['level']}%")
+            print(f"Battery: {data['battery']['level_percent']}%")
 ```
 
 ### JavaScript Web Example
 ```javascript
 // Get current telemetry
-fetch('/api/telemetry/current')
+const apiKey = 'replace-with-your-api-key';
+const headers = {'Content-Type': 'application/json', 'x-api-key': apiKey};
+
+fetch('/api/v1/telemetry/current', {headers})
   .then(r => r.json())
   .then(data => console.log(data));
 
-// Control drone
-fetch('/api/vehicle/arm', {
+const authority = await fetch('/api/v1/control/authority', {
   method: 'POST',
-  headers: {'Content-Type': 'application/json'},
-  body: JSON.stringify({arm: true})
+  headers,
+  body: JSON.stringify({client_id: 'web-ground-station', operator: 'pilot'})
+}).then(r => r.json());
+const controlHeaders = {
+  ...headers,
+  'x-control-token': authority.data.authority.token
+};
+
+// Control drone
+fetch('/api/v1/vehicle/arm', {
+  method: 'POST',
+  headers: controlHeaders,
+  body: JSON.stringify({armed: true})
 });
 
 // Live telemetry via WebSocket
-const ws = new WebSocket('ws://localhost:8000/ws/telemetry');
+const ws = new WebSocket(`ws://localhost:8000/ws/telemetry?api_key=${apiKey}`);
 ws.onmessage = (event) => {
   const telemetry = JSON.parse(event.data);
-  console.log('Battery:', telemetry.battery.level + '%');
+  console.log('Battery:', telemetry.battery.level_percent + '%');
 };
 ```
 

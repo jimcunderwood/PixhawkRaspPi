@@ -24,7 +24,7 @@ if not hasattr(collections, "Iterable"):
 if not hasattr(collections, "Sequence"):
     collections.Sequence = collections.abc.Sequence
 
-from dronekit import connect, Vehicle
+from dronekit import Command, connect, Vehicle
 from pymavlink.dialects.v20 import ardupilotmega as mavutil
 
 from ..config.settings import MAVLinkConfig, ConnectionType
@@ -402,6 +402,374 @@ class ConnectionManager:
             logger.error(f"Failed to set groundspeed: {str(e)}")
             return False
 
+    # Navigation Feature Configuration
+
+    def apply_navigation_config(self, navigation_config) -> dict:
+        """Apply companion obstacle avoidance and terrain-following settings to Pixhawk parameters."""
+        if not self.vehicle:
+            return {
+                "success": False,
+                "message": "Vehicle not connected.",
+                "applied": [],
+                "failed": [],
+            }
+
+        config_data = (
+            navigation_config.to_dict()
+            if hasattr(navigation_config, "to_dict")
+            else navigation_config
+        )
+        updates = self._navigation_parameter_updates(config_data or {})
+        applied = []
+        failed = []
+
+        for name, value in updates.items():
+            try:
+                self.vehicle.parameters[name] = value
+                applied.append({"name": name, "value": value})
+            except Exception as e:
+                logger.error(f"Failed to set Pixhawk parameter {name}: {str(e)}")
+                failed.append({"name": name, "value": value, "error": str(e)})
+
+        return {
+            "success": not failed,
+            "message": "Navigation parameters applied" if not failed else "Some parameters failed to apply.",
+            "applied": applied,
+            "failed": failed,
+            "requested": config_data,
+            "status": self.get_navigation_status(),
+        }
+
+    def get_navigation_status(self) -> dict:
+        """Return current Pixhawk navigation-related parameter and sensor status."""
+        return {
+            "obstacle_avoidance": {
+                "parameters": self._parameter_snapshot(
+                    [
+                        "AVOID_ENABLE",
+                        "AVOID_MARGIN",
+                        "AVOID_BEHAVE",
+                        "AVOID_BACKUP_SPD",
+                        "AVOID_ALT_MIN",
+                        "PRX1_TYPE",
+                        "OA_TYPE",
+                        "OA_BR_LOOKAHEAD",
+                        "OA_MARGIN_MAX",
+                        "OA_BR_TYPE",
+                        "OA_DB_SIZE",
+                    ]
+                ),
+                "proximity": self._proximity_status(),
+            },
+            "terrain_following": {
+                "parameters": self._parameter_snapshot(
+                    [
+                        "TERRAIN_ENABLE",
+                        "TERRAIN_SPACING",
+                        "TERRAIN_CACHE_SZ",
+                        "WP_RFND_USE",
+                        "RTL_ALT_TYPE",
+                    ]
+                ),
+                "terrain": self._terrain_status(),
+            },
+        }
+
+    def _navigation_parameter_updates(self, navigation_config: dict) -> dict:
+        updates = {}
+        updates.update(
+            self._obstacle_avoidance_parameter_updates(
+                navigation_config.get("obstacle_avoidance", {})
+            )
+        )
+        updates.update(
+            self._terrain_following_parameter_updates(
+                navigation_config.get("terrain_following", {})
+            )
+        )
+        return updates
+
+    def _obstacle_avoidance_parameter_updates(self, obstacle_config: dict) -> dict:
+        enabled = bool(obstacle_config.get("enabled", False))
+        mode = str(obstacle_config.get("mode", "simple")).strip().lower()
+        if not enabled or mode == "disabled":
+            return {
+                "AVOID_ENABLE": 0,
+                "OA_TYPE": 0,
+            }
+
+        updates = {
+            "AVOID_ENABLE": 7,
+            "AVOID_MARGIN": float(obstacle_config.get("margin_meters", 2.0)),
+            "AVOID_BEHAVE": self._avoidance_behavior_value(
+                obstacle_config.get("behavior", "slide")
+            ),
+            "AVOID_BACKUP_SPD": float(obstacle_config.get("backup_speed_mps", 0.0)),
+            "AVOID_ALT_MIN": float(obstacle_config.get("min_altitude_meters", 0.0)),
+        }
+
+        proximity_type = obstacle_config.get("proximity_type")
+        if proximity_type is not None:
+            updates["PRX1_TYPE"] = int(proximity_type)
+
+        if mode == "bendy_ruler":
+            updates.update(
+                {
+                    "OA_TYPE": 1,
+                    "OA_BR_LOOKAHEAD": float(obstacle_config.get("lookahead_meters", 5.0)),
+                    "OA_MARGIN_MAX": float(obstacle_config.get("margin_meters", 2.0)),
+                    "OA_BR_TYPE": self._bendy_ruler_type_value(
+                        obstacle_config.get("bendy_ruler_type", "horizontal")
+                    ),
+                }
+            )
+            obstacle_database_size = obstacle_config.get("obstacle_database_size")
+            if obstacle_database_size is not None:
+                updates["OA_DB_SIZE"] = int(obstacle_database_size)
+        else:
+            updates["OA_TYPE"] = 0
+
+        return updates
+
+    def _terrain_following_parameter_updates(self, terrain_config: dict) -> dict:
+        enabled = bool(terrain_config.get("enabled", False))
+        source = str(terrain_config.get("source", "rangefinder")).strip().lower()
+        if not enabled:
+            return {
+                "WP_RFND_USE": 0,
+                "RTL_ALT_TYPE": 0,
+            }
+
+        updates = {}
+        if source == "terrain_database":
+            updates["TERRAIN_ENABLE"] = 1
+        if source == "rangefinder" or terrain_config.get("use_rangefinder_for_waypoints", True):
+            updates["WP_RFND_USE"] = 1
+        else:
+            updates["WP_RFND_USE"] = 0
+        if terrain_config.get("rtl_terrain_enabled", False):
+            updates["RTL_ALT_TYPE"] = 1
+
+        terrain_spacing = terrain_config.get("terrain_spacing_meters")
+        if terrain_spacing is not None:
+            updates["TERRAIN_SPACING"] = float(terrain_spacing)
+
+        return updates
+
+    def _avoidance_behavior_value(self, behavior) -> int:
+        return 1 if str(behavior).strip().lower() == "slide" else 0
+
+    def _bendy_ruler_type_value(self, bendy_ruler_type) -> int:
+        return 2 if str(bendy_ruler_type).strip().lower() == "vertical" else 1
+
+    def _parameter_snapshot(self, names: list) -> dict:
+        return {name: self._get_parameter(name) for name in names}
+
+    def _get_parameter(self, name: str):
+        if not self.vehicle:
+            return None
+        try:
+            return self.vehicle.parameters.get(name)
+        except Exception:
+            try:
+                return self.vehicle.parameters[name]
+            except Exception:
+                return None
+
+    def _proximity_status(self) -> dict:
+        proximity = getattr(self.vehicle, "proximity", None) if self.vehicle else None
+        if not proximity:
+            return {
+                "available": False,
+                "source": None,
+            }
+
+        return {
+            "available": True,
+            "source": "vehicle",
+            "distance_meters": getattr(proximity, "distance", None),
+        }
+
+    # Mission Management
+
+    def upload_mission(self, mission_items: list) -> dict:
+        """Upload companion mission items to the Pixhawk."""
+        if not self.vehicle:
+            return {"success": False, "message": "Vehicle not connected.", "uploaded_count": 0}
+
+        try:
+            commands = self.vehicle.commands
+            commands.clear()
+            commands.wait_ready()
+
+            uploaded_count = 0
+            skipped_items = []
+            for item in mission_items:
+                command = self._mission_item_to_command(item)
+                if command is None:
+                    skipped_items.append(item.to_dict() if hasattr(item, "to_dict") else str(item))
+                    continue
+                commands.add(command)
+                uploaded_count += 1
+
+            commands.upload()
+            commands.wait_ready()
+            return {
+                "success": True,
+                "uploaded_count": uploaded_count,
+                "skipped_count": len(skipped_items),
+                "skipped_items": skipped_items,
+                "pixhawk_count": len(commands),
+                "checksum": self._mission_checksum([self._command_to_dict(cmd, index) for index, cmd in enumerate(commands)]),
+            }
+        except Exception as e:
+            logger.error(f"Mission upload failed: {str(e)}")
+            return {"success": False, "message": str(e), "uploaded_count": 0}
+
+    def download_mission(self) -> dict:
+        """Download mission commands from the Pixhawk."""
+        if not self.vehicle:
+            return {"success": False, "message": "Vehicle not connected.", "items": []}
+
+        try:
+            commands = self.vehicle.commands
+            commands.download()
+            commands.wait_ready()
+            items = [self._command_to_dict(command, index) for index, command in enumerate(commands)]
+            return {
+                "success": True,
+                "count": len(items),
+                "items": items,
+                "checksum": self._mission_checksum(items),
+            }
+        except Exception as e:
+            logger.error(f"Mission download failed: {str(e)}")
+            return {"success": False, "message": str(e), "items": []}
+
+    def clear_pixhawk_mission(self) -> dict:
+        """Clear mission commands on the Pixhawk."""
+        if not self.vehicle:
+            return {"success": False, "message": "Vehicle not connected."}
+
+        try:
+            commands = self.vehicle.commands
+            commands.clear()
+            commands.upload()
+            commands.wait_ready()
+            return {"success": True, "pixhawk_count": len(commands)}
+        except Exception as e:
+            logger.error(f"Mission clear failed: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def verify_mission(self, expected_items: list) -> dict:
+        """Compare companion mission items with Pixhawk mission count/checksum."""
+        downloaded = self.download_mission()
+        if not downloaded.get("success"):
+            return downloaded
+
+        expected_commands = []
+        skipped_items = []
+        for item in expected_items:
+            command = self._mission_item_to_command(item)
+            if command is None:
+                skipped_items.append(item.to_dict() if hasattr(item, "to_dict") else str(item))
+                continue
+            expected_commands.append(self._command_to_dict(command, len(expected_commands)))
+
+        expected_checksum = self._mission_checksum(expected_commands)
+        return {
+            "success": True,
+            "matches": (
+                len(expected_commands) == downloaded["count"]
+                and expected_checksum == downloaded["checksum"]
+            ),
+            "expected_count": len(expected_commands),
+            "pixhawk_count": downloaded["count"],
+            "expected_checksum": expected_checksum,
+            "pixhawk_checksum": downloaded["checksum"],
+            "skipped_count": len(skipped_items),
+            "skipped_items": skipped_items,
+        }
+
+    def _mission_item_to_command(self, item):
+        """Convert internal mission item to DroneKit Command."""
+        from ..missions.planner import MissionItemType
+
+        command_map = {
+            MissionItemType.WAYPOINT: mavutil.MAV_CMD_NAV_WAYPOINT,
+            MissionItemType.LOITER: mavutil.MAV_CMD_NAV_LOITER_TURNS,
+            MissionItemType.LAND: mavutil.MAV_CMD_NAV_LAND,
+            MissionItemType.TAKEOFF: mavutil.MAV_CMD_NAV_TAKEOFF,
+            MissionItemType.SPRAY_START: mavutil.MAV_CMD_DO_SET_RELAY,
+            MissionItemType.SPRAY_STOP: mavutil.MAV_CMD_DO_SET_RELAY,
+        }
+        command_id = command_map.get(item.type)
+        if command_id is None:
+            return None
+
+        x = item.location.latitude
+        y = item.location.longitude
+        z = item.location.altitude
+        param1 = item.param1
+        param2 = item.param2
+        param3 = item.param3
+        param4 = item.param4
+        altitude_frame = getattr(getattr(item, "altitude_frame", None), "value", None)
+        if altitude_frame is None:
+            altitude_frame = getattr(item, "altitude_frame", "relative")
+        frame = (
+            mavutil.MAV_FRAME_GLOBAL_TERRAIN_ALT
+            if altitude_frame == "terrain"
+            else mavutil.MAV_FRAME_GLOBAL_RELATIVE_ALT
+        )
+
+        if item.type == MissionItemType.SPRAY_START:
+            param1, param2, x, y, z = 0, 1, 0, 0, 0
+        elif item.type == MissionItemType.SPRAY_STOP:
+            param1, param2, x, y, z = 0, 0, 0, 0, 0
+
+        return Command(
+            0,
+            0,
+            0,
+            frame,
+            command_id,
+            0,
+            1,
+            param1,
+            param2,
+            param3,
+            param4,
+            x,
+            y,
+            z,
+        )
+
+    def _command_to_dict(self, command, sequence: int) -> dict:
+        return {
+            "sequence": sequence,
+            "command": getattr(command, "command", None),
+            "frame": getattr(command, "frame", None),
+            "current": getattr(command, "current", None),
+            "autocontinue": getattr(command, "autocontinue", None),
+            "param1": getattr(command, "param1", None),
+            "param2": getattr(command, "param2", None),
+            "param3": getattr(command, "param3", None),
+            "param4": getattr(command, "param4", None),
+            "location": {
+                "latitude": getattr(command, "x", None),
+                "longitude": getattr(command, "y", None),
+                "altitude": getattr(command, "z", None),
+            },
+        }
+
+    def _mission_checksum(self, items: list) -> str:
+        import hashlib
+        import json
+
+        normalized = json.dumps(items, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
     # Callback Management
 
     def register_callback(self, event: str, callback: Callable):
@@ -430,6 +798,60 @@ class ConnectionManager:
 
     # Telemetry Access
 
+    def _gps_status(self) -> Optional[dict]:
+        gps = getattr(self.vehicle, "gps_0", None) if self.vehicle else None
+        if not gps:
+            return None
+
+        fix_type = getattr(gps, "fix_type", None)
+        return {
+            "fix_type": fix_type,
+            "fix_name": self._gps_fix_name(fix_type),
+            "satellite_count": getattr(gps, "satellites_visible", None),
+            "horizontal_accuracy": getattr(gps, "eph", None),
+            "vertical_accuracy": getattr(gps, "epv", None),
+        }
+
+    def _rtk_status(self, gps_status: Optional[dict]) -> dict:
+        fix_type = (gps_status or {}).get("fix_type")
+        return {
+            "enabled_by_fix": fix_type in {5, 6},
+            "fix_type": fix_type,
+            "fix_name": (gps_status or {}).get("fix_name"),
+            "is_float": fix_type == 5,
+            "is_fixed": fix_type == 6,
+        }
+
+    def _gps_fix_name(self, fix_type: Optional[int]) -> Optional[str]:
+        return {
+            0: "no_gps",
+            1: "no_fix",
+            2: "2d_fix",
+            3: "3d_fix",
+            4: "dgps",
+            5: "rtk_float",
+            6: "rtk_fixed",
+        }.get(fix_type)
+
+    def _terrain_status(self) -> dict:
+        rangefinder = getattr(self.vehicle, "rangefinder", None) if self.vehicle else None
+        terrain = {
+            "rangefinder_distance_meters": None,
+            "rangefinder_voltage": None,
+            "source": None,
+        }
+
+        if rangefinder:
+            terrain.update(
+                {
+                    "rangefinder_distance_meters": getattr(rangefinder, "distance", None),
+                    "rangefinder_voltage": getattr(rangefinder, "voltage", None),
+                    "source": "rangefinder",
+                }
+            )
+
+        return terrain
+
     def get_prearm_status(self) -> dict:
         """Get current pre-arm readiness and recent pre-arm failure messages."""
         if not self.vehicle:
@@ -440,15 +862,7 @@ class ConnectionManager:
                 prearm_messages = list(self._prearm_messages)
                 last_status_text = self._last_status_text
 
-            gps = getattr(self.vehicle, "gps_0", None)
-            gps_status = None
-            if gps:
-                gps_status = {
-                    "fix_type": getattr(gps, "fix_type", None),
-                    "satellites_visible": getattr(gps, "satellites_visible", None),
-                    "eph": getattr(gps, "eph", None),
-                    "epv": getattr(gps, "epv", None),
-                }
+            gps_status = self._gps_status()
 
             return {
                 "connected": self.connected,
@@ -457,6 +871,8 @@ class ConnectionManager:
                 "mode": self.vehicle.mode.name,
                 "system_status": self.vehicle.system_status.state,
                 "gps": gps_status,
+                "rtk": self._rtk_status(gps_status),
+                "terrain": self._terrain_status(),
                 "ekf_ok": getattr(self.vehicle, "ekf_ok", None),
                 "last_status_text": last_status_text,
                 "prearm_messages": prearm_messages,
@@ -471,6 +887,7 @@ class ConnectionManager:
             return {}
         
         try:
+            gps_status = self._gps_status()
             return {
                 'armed': self.vehicle.armed,
                 'mode': self.vehicle.mode.name,
@@ -480,23 +897,26 @@ class ConnectionManager:
                     'yaw': self.vehicle.attitude.yaw,
                 },
                 'location': {
-                    'lat': self.vehicle.location.global_frame.lat,
-                    'lon': self.vehicle.location.global_frame.lon,
-                    'alt': self.vehicle.location.global_frame.alt,
+                    'latitude': self.vehicle.location.global_frame.lat,
+                    'longitude': self.vehicle.location.global_frame.lon,
+                    'altitude': self.vehicle.location.global_frame.alt,
                 },
                 'velocity': {
-                    'vx': self.vehicle.velocity[0],
-                    'vy': self.vehicle.velocity[1],
-                    'vz': self.vehicle.velocity[2],
+                    'north': self.vehicle.velocity[0],
+                    'east': self.vehicle.velocity[1],
+                    'down': self.vehicle.velocity[2],
                 },
                 'battery': {
                     'voltage': self.vehicle.battery.voltage,
                     'current': self.vehicle.battery.current,
-                    'level': self.vehicle.battery.level,
+                    'level_percent': self.vehicle.battery.level,
                 },
-                'groundspeed': self.vehicle.groundspeed,
-                'airspeed': self.vehicle.airspeed,
+                'ground_speed': self.vehicle.groundspeed,
+                'air_speed': self.vehicle.airspeed,
                 'heading': self.vehicle.heading,
+                'gps': gps_status,
+                'rtk': self._rtk_status(gps_status),
+                'terrain': self._terrain_status(),
                 'is_armable': self.vehicle.is_armable,
                 'system_status': self.vehicle.system_status.state,
             }

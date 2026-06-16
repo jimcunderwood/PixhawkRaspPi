@@ -31,6 +31,7 @@
         │  │  │ - TAKEOFF/LAND            │   │ - Logger  │ │ │
         │  │  │ - MODE CHANGES            │   │ - Streamer│ │ │
         │  │  │ - GOTO LOCATION           │   └───────────┘ │ │
+        │  │  │ - NAV SAFETY PARAMS       │                 │ │
         │  │  └──────────────────────────┘                    │ │
         │  │                                                   │ │
         │  │  ┌──────────────────┐   ┌──────────────────────┐│ │
@@ -64,6 +65,7 @@
 - Establish MAVLink connection to Pixhawk
 - Vehicle control (arm, disarm, takeoff, land, goto)
 - Flight mode changes
+- Apply obstacle avoidance and terrain-following parameters
 - Monitor connection health
 - Event callbacks for state changes
 
@@ -74,6 +76,8 @@
 - `land()` - Land drone
 - `goto_location(lat, lon, alt)` - Autonomous flight to point
 - `set_mode(mode)` - Change flight mode (GUIDED, AUTO, LOITER, etc.)
+- `apply_navigation_config(config)` - Apply avoidance/terrain Pixhawk params
+- `get_navigation_status()` - Report relevant Pixhawk navigation params
 - `get_vehicle_state()` - Query current state
 
 **State Management**:
@@ -87,6 +91,8 @@
 - Create and manage waypoint missions
 - Handle field boundaries (spray zones)
 - Generate spray mission patterns
+- Persist navigation safety config
+- Mark mission items as relative-altitude or terrain-altitude
 - Track mission execution progress
 - Persist missions to file
 
@@ -94,6 +100,7 @@
 - `GeoPoint` - Single GPS coordinate
 - `MissionItem` - Waypoint with metadata
 - `FieldBoundary` - Polygon boundary for field
+- `NavigationConfig` - Obstacle avoidance and terrain-following settings
 - Mission list with sequence tracking
 
 **Key Methods**:
@@ -102,6 +109,7 @@
 - `add_spray_zone()` - Generate spray passes over field
 - `start_mission()` / `pause_mission()` / `abort_mission()`
 - `save_mission()` / `load_mission()` - Persistence
+- `update_navigation_config()` - Update persisted navigation settings
 
 ### 3. Telemetry Collector (`src/telemetry/collector.py`)
 
@@ -171,6 +179,11 @@ Mission Management:
   GET    /api/mission/waypoints
   POST   /api/mission/start/pause/resume/abort
   GET    /api/mission/stats
+
+Navigation:
+  GET    /api/navigation/config
+  POST   /api/navigation/config
+  POST   /api/navigation/apply
 
 Payloads:
   POST   /api/payload/control
@@ -302,6 +315,11 @@ CAMERA_ENABLED=True
 [Mission]
 MAX_WAYPOINTS=100
 DEFAULT_AIRSPEED=5
+OBSTACLE_AVOIDANCE_ENABLED=False
+OBSTACLE_AVOIDANCE_MODE=simple
+TERRAIN_FOLLOWING_ENABLED=False
+TERRAIN_SENSOR_SOURCE=rangefinder
+TERRAIN_TARGET_AGL_METERS=
 
 [Telemetry]
 TELEMETRY_UPDATE_INTERVAL=0.5

@@ -6,12 +6,14 @@ Demonstrates how to use the Companion Computer API
 import requests
 import websocket
 import json
+import os
 import time
 import threading
 
 # Configuration
 API_URL = "http://192.168.4.10:8000"  # Change to your Pi's IP
 WS_URL = "ws://192.168.4.10:8000"
+API_KEY = os.getenv("DRONE_API_KEY", "")
 
 
 class DroneClient:
@@ -20,11 +22,14 @@ class DroneClient:
     def __init__(self, base_url: str):
         self.base_url = base_url
         self.ws = None
+        self.session = requests.Session()
+        if API_KEY:
+            self.session.headers.update({"x-api-key": API_KEY})
 
     def health_check(self):
         """Check if API is running"""
         try:
-            response = requests.get(f"{self.base_url}/health")
+            response = self.session.get(f"{self.base_url}/health")
             print(f"✓ API Health: {response.json()}")
             return True
         except Exception as e:
@@ -33,7 +38,7 @@ class DroneClient:
 
     def get_vehicle_status(self):
         """Get current vehicle state"""
-        response = requests.get(f"{self.base_url}/api/vehicle/status")
+        response = self.session.get(f"{self.base_url}/api/vehicle/status")
         data = response.json()
         
         if data['status'] == 'success':
@@ -41,9 +46,12 @@ class DroneClient:
             print(f"Vehicle Status:")
             print(f"  Armed: {vehicle['armed']}")
             print(f"  Mode: {vehicle['mode']}")
-            print(f"  GPS: {vehicle['location']['lat']:.6f}, {vehicle['location']['lon']:.6f}")
-            print(f"  Altitude: {vehicle['location']['alt']:.1f}m")
-            print(f"  Battery: {vehicle['battery']['level']:.1f}%")
+            print(
+                f"  GPS: {vehicle['location']['latitude']:.6f}, "
+                f"{vehicle['location']['longitude']:.6f}"
+            )
+            print(f"  Altitude: {vehicle['location']['altitude']:.1f}m")
+            print(f"  Battery: {vehicle['battery']['level_percent']:.1f}%")
             return vehicle
         else:
             print(f"Error: {data['message']}")
@@ -54,9 +62,9 @@ class DroneClient:
         action = "Arming" if arm else "Disarming"
         print(f"{action} drone...")
         
-        response = requests.post(
+        response = self.session.post(
             f"{self.base_url}/api/vehicle/arm",
-            json={'arm': arm}
+            json={'armed': arm}
         )
         data = response.json()
         print(f"  Result: {data['message']}")
@@ -66,7 +74,7 @@ class DroneClient:
         """Takeoff to specified altitude"""
         print(f"Taking off to {altitude}m...")
         
-        response = requests.post(
+        response = self.session.post(
             f"{self.base_url}/api/vehicle/takeoff",
             json={'altitude': altitude}
         )
@@ -78,7 +86,7 @@ class DroneClient:
         """Land the drone"""
         print("Landing...")
         
-        response = requests.post(f"{self.base_url}/api/vehicle/land")
+        response = self.session.post(f"{self.base_url}/api/vehicle/land")
         data = response.json()
         print(f"  Result: {data['message']}")
         return data['status'] == 'success'
@@ -87,12 +95,14 @@ class DroneClient:
         """Fly to GPS location"""
         print(f"Flying to {latitude:.6f}, {longitude:.6f} at {altitude}m...")
         
-        response = requests.post(
+        response = self.session.post(
             f"{self.base_url}/api/vehicle/goto",
             json={
-                'latitude': latitude,
-                'longitude': longitude,
-                'altitude': altitude
+                'location': {
+                    'latitude': latitude,
+                    'longitude': longitude,
+                    'altitude': altitude
+                }
             }
         )
         data = response.json()
@@ -103,7 +113,7 @@ class DroneClient:
         """Change flight mode"""
         print(f"Setting mode to {mode}...")
         
-        response = requests.post(
+        response = self.session.post(
             f"{self.base_url}/api/vehicle/mode",
             json={'mode': mode}
         )
@@ -113,42 +123,56 @@ class DroneClient:
 
     # Mission Operations
     
-    def add_waypoint(self, latitude: float, longitude: float, altitude: float):
+    def add_waypoint(
+        self,
+        latitude: float,
+        longitude: float,
+        altitude: float,
+        altitude_frame: str | None = None,
+    ):
         """Add waypoint to mission"""
         print(f"Adding waypoint: {latitude:.6f}, {longitude:.6f}, {altitude}m")
-        
-        response = requests.post(
-            f"{self.base_url}/api/mission/add-waypoint",
-            json={
+
+        payload = {
+            'location': {
                 'latitude': latitude,
                 'longitude': longitude,
                 'altitude': altitude
             }
+        }
+        if altitude_frame:
+            payload['altitude_frame'] = altitude_frame
+
+        response = self.session.post(
+            f"{self.base_url}/api/mission/add-waypoint",
+            json=payload
         )
         data = response.json()
         return data['status'] == 'success'
 
     def get_mission(self):
         """Get current mission"""
-        response = requests.get(f"{self.base_url}/api/mission/waypoints")
+        response = self.session.get(f"{self.base_url}/api/mission/waypoints")
         data = response.json()
         
         if data['status'] == 'success':
             mission = data['data']
-            print(f"Mission ({len(mission)} waypoints):")
-            for item in mission:
+            waypoints = mission.get('waypoints', [])
+            print(f"Mission ({len(waypoints)} waypoints):")
+            for item in waypoints:
                 print(f"  {item['sequence']}: "
                       f"{item['location']['latitude']:.6f}, "
                       f"{item['location']['longitude']:.6f}, "
-                      f"{item['location']['altitude']}m")
-            return mission
+                      f"{item['location']['altitude']}m "
+                      f"({item.get('altitude_frame', 'relative')})")
+            return waypoints
         return None
 
     def start_mission(self):
         """Start mission execution"""
         print("Starting mission...")
         
-        response = requests.post(f"{self.base_url}/api/mission/start")
+        response = self.session.post(f"{self.base_url}/api/mission/start")
         data = response.json()
         print(f"  Result: {data['message']}")
         return data['status'] == 'success'
@@ -157,7 +181,7 @@ class DroneClient:
         """Pause mission"""
         print("Pausing mission...")
         
-        response = requests.post(f"{self.base_url}/api/mission/pause")
+        response = self.session.post(f"{self.base_url}/api/mission/pause")
         data = response.json()
         return data['status'] == 'success'
 
@@ -165,24 +189,90 @@ class DroneClient:
         """Abort mission"""
         print("Aborting mission...")
         
-        response = requests.post(f"{self.base_url}/api/mission/abort")
+        response = self.session.post(f"{self.base_url}/api/mission/abort")
         data = response.json()
         return data['status'] == 'success'
 
     def get_mission_stats(self):
         """Get mission statistics"""
-        response = requests.get(f"{self.base_url}/api/mission/stats")
+        response = self.session.get(f"{self.base_url}/api/mission/stats")
         data = response.json()
         
         if data['status'] == 'success':
             stats = data['data']
             print(f"Mission Stats:")
-            print(f"  Total items: {stats.get('total_items', 0)}")
-            print(f"  Waypoints: {stats.get('waypoints', 0)}")
+            print(f"  Total items: {stats.get('total_item_count', 0)}")
+            print(f"  Waypoints: {stats.get('waypoint_count', 0)}")
             print(f"  Altitude range: {stats.get('min_altitude', 0):.1f} - "
                   f"{stats.get('max_altitude', 0):.1f}m")
             return stats
         return None
+
+    # Navigation Safety
+
+    def get_navigation_config(self):
+        """Get obstacle avoidance and terrain-following config"""
+        response = self.session.get(f"{self.base_url}/api/navigation/config")
+        data = response.json()
+
+        if data['status'] == 'success':
+            navigation = data['data']
+            config = navigation['config']
+            print("Navigation Config:")
+            print(f"  Obstacle avoidance: {config['obstacle_avoidance']['enabled']}")
+            print(f"    Mode: {config['obstacle_avoidance']['mode']}")
+            print(f"    Margin: {config['obstacle_avoidance']['margin_meters']}m")
+            print(f"  Terrain following: {config['terrain_following']['enabled']}")
+            print(f"    Source: {config['terrain_following']['source']}")
+            print(f"    AGL limits: {config['terrain_following']['min_agl_meters']} - "
+                  f"{config['terrain_following']['max_agl_meters']}m")
+            return navigation
+        return None
+
+    def configure_navigation(
+        self,
+        obstacle_enabled: bool = True,
+        obstacle_mode: str = "bendy_ruler",
+        terrain_enabled: bool = True,
+        terrain_source: str = "rangefinder",
+        apply_to_pixhawk: bool = False,
+    ):
+        """Configure obstacle avoidance and terrain following"""
+        print("Configuring navigation safety...")
+
+        response = self.session.post(
+            f"{self.base_url}/api/navigation/config",
+            json={
+                'obstacle_avoidance': {
+                    'enabled': obstacle_enabled,
+                    'mode': obstacle_mode,
+                    'margin_meters': 2.0,
+                    'lookahead_meters': 5.0,
+                    'behavior': 'slide',
+                    'bendy_ruler_type': 'horizontal',
+                    'proximity_type': 4,
+                },
+                'terrain_following': {
+                    'enabled': terrain_enabled,
+                    'source': terrain_source,
+                    'min_agl_meters': 2.0,
+                    'max_agl_meters': 120.0,
+                    'use_rangefinder_for_waypoints': terrain_source == 'rangefinder',
+                },
+                'apply_to_pixhawk': apply_to_pixhawk,
+            }
+        )
+        data = response.json()
+        print(f"  Result: {data['message']}")
+        return data['status'] == 'success'
+
+    def apply_navigation_config(self):
+        """Apply saved navigation config to Pixhawk parameters"""
+        print("Applying navigation config to Pixhawk...")
+        response = self.session.post(f"{self.base_url}/api/navigation/apply")
+        data = response.json()
+        print(f"  Result: {data['message']}")
+        return data['status'] == 'success'
 
     # Payload Control
 
@@ -190,7 +280,7 @@ class DroneClient:
         """Start spray pump"""
         print("Starting spray...")
         
-        response = requests.post(
+        response = self.session.post(
             f"{self.base_url}/api/payload/control",
             json={'action': 'spray_start'}
         )
@@ -202,7 +292,7 @@ class DroneClient:
         """Stop spray pump"""
         print("Stopping spray...")
         
-        response = requests.post(
+        response = self.session.post(
             f"{self.base_url}/api/payload/control",
             json={'action': 'spray_stop'}
         )
@@ -214,7 +304,7 @@ class DroneClient:
         """Capture photo"""
         print("Capturing photo...")
         
-        response = requests.post(
+        response = self.session.post(
             f"{self.base_url}/api/payload/control",
             json={'action': 'photo'}
         )
@@ -224,7 +314,7 @@ class DroneClient:
 
     def get_payload_status(self):
         """Get payload status"""
-        response = requests.get(f"{self.base_url}/api/payload/status")
+        response = self.session.get(f"{self.base_url}/api/payload/status")
         data = response.json()
         
         if data['status'] == 'success':
@@ -234,13 +324,13 @@ class DroneClient:
             if 'spray_pump' in payload:
                 spray = payload['spray_pump']
                 print(f"  Spray Pump: {spray['status']}")
-                print(f"    Total time: {spray['total_on_time']:.1f}s")
+                print(f"    Total time: {spray['total_on_time_seconds']:.1f}s")
             
             if 'flow_sensor' in payload:
                 flow = payload['flow_sensor']
                 print(f"  Flow Sensor:")
-                print(f"    Total volume: {flow['total_volume']:.2f}L")
-                print(f"    Flow rate: {flow['flow_rate']:.2f}L/min")
+                print(f"    Total volume: {flow['total_volume_liters']:.2f}L")
+                print(f"    Flow rate: {flow['flow_rate_liters_per_minute']:.2f}L/min")
             
             if 'camera' in payload:
                 camera = payload['camera']
@@ -255,18 +345,18 @@ class DroneClient:
 
     def get_telemetry(self):
         """Get current telemetry"""
-        response = requests.get(f"{self.base_url}/api/telemetry/current")
+        response = self.session.get(f"{self.base_url}/api/telemetry/current")
         data = response.json()
         
         if data['status'] == 'success':
             telemetry = data['data']
             print(f"Current Telemetry:")
-            print(f"  GPS: {telemetry['location']['lat']:.6f}, "
-                  f"{telemetry['location']['lon']:.6f}, "
-                  f"{telemetry['location']['alt']:.1f}m")
-            print(f"  Battery: {telemetry['battery']['level']:.1f}% "
+            print(f"  GPS: {telemetry['location']['latitude']:.6f}, "
+                  f"{telemetry['location']['longitude']:.6f}, "
+                  f"{telemetry['location']['altitude']:.1f}m")
+            print(f"  Battery: {telemetry['battery']['level_percent']:.1f}% "
                   f"({telemetry['battery']['voltage']:.2f}V)")
-            print(f"  Groundspeed: {telemetry['groundspeed']:.1f} m/s")
+            print(f"  Groundspeed: {telemetry['ground_speed']:.1f} m/s")
             print(f"  Heading: {telemetry['heading']}°")
             return telemetry
         return None
@@ -274,11 +364,14 @@ class DroneClient:
     def subscribe_telemetry(self, callback):
         """Subscribe to live telemetry stream"""
         print("Subscribing to telemetry stream...")
+        ws_url = f"{WS_URL}/ws/telemetry"
+        if API_KEY:
+            ws_url = f"{ws_url}?api_key={API_KEY}"
         
         def run():
             try:
                 self.ws = websocket.WebSocketApp(
-                    f"{WS_URL}/ws/telemetry",
+                    ws_url,
                     on_message=lambda ws, msg: callback(json.loads(msg)),
                     on_error=lambda ws, err: print(f"WS Error: {err}"),
                     on_close=lambda ws: print("Connection closed")
@@ -342,7 +435,7 @@ def example_mission():
     client = DroneClient(API_URL)
     
     # Clear previous mission
-    requests.post(f"{API_URL}/api/mission/clear")
+    client.session.post(f"{API_URL}/api/mission/clear")
     
     # Create mission
     waypoints = [
@@ -363,6 +456,27 @@ def example_mission():
     
     # Get statistics
     client.get_mission_stats()
+
+
+def example_navigation_safety():
+    """Obstacle avoidance and terrain-following example"""
+    print("=== Navigation Safety Example ===\n")
+
+    client = DroneClient(API_URL)
+
+    client.get_navigation_config()
+    print()
+
+    client.configure_navigation(
+        obstacle_enabled=True,
+        obstacle_mode="bendy_ruler",
+        terrain_enabled=True,
+        terrain_source="rangefinder",
+        apply_to_pixhawk=False,
+    )
+    print()
+
+    client.get_navigation_config()
 
 
 def example_spray_mission():
@@ -406,8 +520,8 @@ def example_telemetry_stream():
         message_count[0] += 1
         if message_count[0] % 10 == 0:  # Print every 10th message
             print(f"Telemetry #{message_count[0]}: "
-                  f"Alt={data['location']['alt']:.1f}m, "
-                  f"Batt={data['battery']['level']:.1f}%")
+                  f"Alt={data['location']['altitude']:.1f}m, "
+                  f"Batt={data['battery']['level_percent']:.1f}%")
     
     thread = client.subscribe_telemetry(on_telemetry)
     
@@ -422,7 +536,7 @@ if __name__ == "__main__":
     import sys
     
     if len(sys.argv) < 2:
-        print("Usage: python example_client.py [flight|mission|spray|telemetry]")
+        print("Usage: python example_client.py [flight|mission|navigation|spray|telemetry]")
         sys.exit(1)
     
     command = sys.argv[1]
@@ -431,6 +545,8 @@ if __name__ == "__main__":
         example_simple_flight()
     elif command == "mission":
         example_mission()
+    elif command == "navigation":
+        example_navigation_safety()
     elif command == "spray":
         example_spray_mission()
     elif command == "telemetry":

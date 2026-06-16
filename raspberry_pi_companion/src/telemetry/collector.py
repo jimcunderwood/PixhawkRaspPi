@@ -133,7 +133,11 @@ class TelemetryCollector:
         }
         
         # Battery statistics
-        battery_levels = [p['battery']['level'] for p in history if 'battery' in p]
+        battery_levels = [
+            p['battery']['level_percent']
+            for p in history
+            if 'battery' in p and p['battery'].get('level_percent') is not None
+        ]
         if battery_levels:
             stats['battery'] = {
                 'min': min(battery_levels),
@@ -143,7 +147,11 @@ class TelemetryCollector:
             }
         
         # Altitude statistics
-        altitudes = [p['location']['alt'] for p in history if 'location' in p]
+        altitudes = [
+            p['location']['altitude']
+            for p in history
+            if 'location' in p and p['location'].get('altitude') is not None
+        ]
         if altitudes:
             stats['altitude'] = {
                 'min': min(altitudes),
@@ -153,9 +161,9 @@ class TelemetryCollector:
             }
         
         # Speed statistics
-        speeds = [p.get('groundspeed', 0) for p in history]
+        speeds = [p.get('ground_speed', 0) for p in history]
         if speeds:
-            stats['groundspeed'] = {
+            stats['ground_speed'] = {
                 'min': min(speeds),
                 'max': max(speeds),
                 'avg': sum(speeds) / len(speeds),
@@ -239,6 +247,11 @@ class TelemetryManager:
     def get_current(self) -> Optional[Dict]:
         """Get current telemetry"""
         return self.collector.get_current()
+
+    @property
+    def last_update(self) -> float:
+        """Timestamp of the most recent telemetry update."""
+        return self.collector.last_update
 
     def get_history(self, seconds: Optional[int] = None) -> List[Dict]:
         """Get telemetry history"""

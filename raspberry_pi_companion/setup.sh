@@ -3,18 +3,29 @@
 # Raspberry Pi 4 Companion Computer Setup Script
 # Installs dependencies and configures the system
 
-set -e
+set -euo pipefail
+
+SUDO=(sudo)
+if [ "${EUID}" -eq 0 ]; then
+    SUDO=()
+elif ! sudo -n true 2>/dev/null; then
+    echo "This setup script needs sudo to install system packages and configure serial access."
+    echo "Run it from the Pi with:"
+    echo "  cd $(cd "$(dirname "$0")" && pwd)"
+    echo "  sudo ./setup.sh"
+    exit 1
+fi
 
 echo "=== Agricultural Drone Companion Computer Setup ==="
 
 # Update system
 echo "Updating system packages..."
-sudo apt-get update
-sudo apt-get upgrade -y
+"${SUDO[@]}" apt-get update
+"${SUDO[@]}" apt-get upgrade -y
 
 # Install Python and pip
 echo "Installing Python development tools..."
-sudo apt-get install -y \
+"${SUDO[@]}" apt-get install -y \
     python3-pip \
     python3-dev \
     python3-venv \
@@ -22,7 +33,8 @@ sudo apt-get install -y \
 
 # Install system dependencies
 echo "Installing system dependencies..."
-sudo apt-get update && sudo apt-get install -y \
+"${SUDO[@]}" apt-get update
+"${SUDO[@]}" apt-get install -y \
   git \
   curl \
   libssl-dev \
@@ -37,8 +49,8 @@ sudo apt-get update && sudo apt-get install -y \
 # Enable serial interface for Pixhawk communication (Raspberry Pi only)
 if command -v raspi-config &> /dev/null; then
     echo "Enabling serial interface..."
-    sudo raspi-config nonint do_serial_hw 0
-    sudo raspi-config nonint do_serial_console 1
+    "${SUDO[@]}" raspi-config nonint do_serial_hw 0
+    "${SUDO[@]}" raspi-config nonint do_serial_console 1
 else
     echo "Skipping serial interface setup (not on Raspberry Pi)"
 fi
@@ -70,6 +82,6 @@ echo "Next steps:"
 echo "1. Copy .env.example to .env and configure settings"
 echo "2. Run: source venv/bin/activate"
 echo "3. Run: python main.py"
-echo "4. Enable boot startup: ./install_service.sh"
+echo "4. Install to /opt and enable boot startup: sudo ./install_service.sh"
 echo ""
 echo "For more systemd service details, see docs/SETUP.md"

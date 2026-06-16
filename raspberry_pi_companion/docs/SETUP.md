@@ -92,7 +92,7 @@ cat /dev/serial0  # Should show telemetry data from Pixhawk
 ### 1. Install Dependencies
 
 ```bash
-cd ~/agri_dronesetup/raspberry_pi_companion
+cd ~/PixhawkRaspPi/raspberry_pi_companion
 chmod +x setup.sh
 ./setup.sh
 ```
@@ -108,6 +108,7 @@ Edit key settings:
 - `MAVLINK_PORT=/dev/serial0` (or `/dev/ttyUSB0` if using USB)
 - `API_HOST=0.0.0.0` (accessible from network)
 - `API_PORT=8000`
+- `API_KEY=replace-with-a-long-random-token`
 - Hardware pins match your wiring
 
 ### 3. Test Connection
@@ -172,11 +173,13 @@ sudo ufw allow 8000/udp
 
 ```bash
 chmod +x install_service.sh
-./install_service.sh
+sudo ./install_service.sh
 ```
 
-The installer writes `/etc/systemd/system/drone-companion.service` with the
-correct path for your checkout, enables it for reboot, and starts it now.
+The installer copies the app to `/opt/drone-companion`, creates the
+`drone-companion` service user, prepares `/var/lib/drone-companion`, writes
+`/etc/systemd/system/drone-companion.service`, enables it for reboot, and starts
+it now.
 
 ### 2. Verify Service
 
@@ -201,26 +204,49 @@ Response:
 ### 2. Get Vehicle Status
 
 ```bash
-curl http://localhost:8000/api/vehicle/status
+export DRONE_API_KEY="replace-with-your-api-key"
+
+curl -H "x-api-key: $DRONE_API_KEY" \
+  http://localhost:8000/api/v1/vehicle/status
 ```
 
-### 3. Add Waypoint
+### 3. Acquire Command Authority
+
+Mission edits and vehicle commands require both `x-api-key` and
+`x-control-token`. Acquire a short-lived command authority token before sending
+those requests:
 
 ```bash
-curl -X POST http://localhost:8000/api/mission/add-waypoint \
+CONTROL_TOKEN=$(
+  curl -s -X POST http://localhost:8000/api/v1/control/authority \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: $DRONE_API_KEY" \
+    -d '{"client_id":"setup-test","operator":"field-tech"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["authority"]["token"])'
+)
+```
+
+### 4. Add Waypoint
+
+```bash
+curl -X POST http://localhost:8000/api/v1/mission/add-waypoint \
   -H "Content-Type: application/json" \
+  -H "x-api-key: $DRONE_API_KEY" \
+  -H "x-control-token: $CONTROL_TOKEN" \
   -d '{
-    "latitude": 40.7128,
-    "longitude": -74.0060,
-    "altitude": 50.0
+    "location": {
+      "latitude": 40.7128,
+      "longitude": -74.0060,
+      "altitude": 50.0
+    }
   }'
 ```
 
-### 4. WebSocket Telemetry Stream
+### 5. WebSocket Telemetry Stream
 
 ```bash
 # Using wscat or websocat
-wscat -c ws://localhost:8000/ws/telemetry
+wscat -c "ws://localhost:8000/ws/telemetry?api_key=$DRONE_API_KEY"
 ```
 
 ## Troubleshooting

@@ -70,7 +70,7 @@ curl -H "x-api-key: <your-api-key>" \
 curl -X POST http://<raspberry-pi-ip>:8000/api/mission/add-waypoint \
   -H "Content-Type: application/json" \
   -H "x-api-key: <your-api-key>" \
-  -d '{"latitude": 40.7128, "longitude": -74.0060, "altitude": 50}'
+  -d '{"location": {"latitude": 40.7128, "longitude": -74.0060, "altitude": 50}}'
 ```
 
 Swagger API docs are available at `http://<raspberry-pi-ip>:8000/docs`.
@@ -93,7 +93,7 @@ import requests
 
 requests.post('http://localhost:8000/api/vehicle/arm', 
               headers={'x-api-key': '<your-api-key>'},
-              json={'arm': True})
+              json={'armed': True})
 ```
 
 ### Takeoff
@@ -110,9 +110,11 @@ for i in range(5):
     requests.post('http://localhost:8000/api/mission/add-waypoint',
                   headers={'x-api-key': '<your-api-key>'},
                   json={
-                    'latitude': 40.7128 + i*0.001,
-                    'longitude': -74.0060 + i*0.001,
-                    'altitude': 50.0
+                    'location': {
+                      'latitude': 40.7128 + i*0.001,
+                      'longitude': -74.0060 + i*0.001,
+                      'altitude': 50.0
+                    }
                   })
 
 # Start mission
@@ -136,7 +138,7 @@ requests.post('http://localhost:8000/api/payload/control',
 response = requests.get('http://localhost:8000/api/payload/status',
                         headers={'x-api-key': '<your-api-key>'})
 status = response.json()
-print(f"Spray time: {status['data']['spray_pump']['total_on_time']} seconds")
+print(f"Spray time: {status['data']['spray_pump']['total_on_time_seconds']} seconds")
 ```
 
 ### Monitor Telemetry
@@ -146,8 +148,8 @@ import json
 
 def on_message(ws, message):
     data = json.loads(message)
-    print(f"Alt: {data['location']['alt']}m, "
-          f"Battery: {data['battery']['level']}%")
+    print(f"Alt: {data['location']['altitude']}m, "
+          f"Battery: {data['battery']['level_percent']}%")
 
 ws = websocket.WebSocketApp(
     "ws://localhost:8000/ws/telemetry?api_key=<your-api-key>",

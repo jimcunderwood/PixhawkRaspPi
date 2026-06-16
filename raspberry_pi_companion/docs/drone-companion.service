@@ -5,10 +5,19 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/PixhawkRaspPi/raspberry_pi_companion
-Environment="PATH=/home/pi/PixhawkRaspPi/raspberry_pi_companion/venv/bin"
-ExecStart=/home/pi/PixhawkRaspPi/raspberry_pi_companion/venv/bin/python main.py
+User=drone-companion
+Group=drone-companion
+SupplementaryGroups=video dialout gpio
+WorkingDirectory=/opt/drone-companion
+Environment="PATH=/opt/drone-companion/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="APP_DATA_DIRECTORY=/var/lib/drone-companion"
+Environment="PHOTO_DIRECTORY=/var/lib/drone-companion/photos"
+Environment="SPRAY_SESSION_DIRECTORY=/var/lib/drone-companion/spray-sessions"
+Environment="MISSION_FILE=/var/lib/drone-companion/missions/mission.json"
+Environment="AUDIT_LOG_FILE=/var/lib/drone-companion/audit/events.jsonl"
+Environment="PPK_LOG_DIRECTORY=/var/lib/drone-companion/ppk"
+Environment="SPRAY_APPLICATION_RECORD_DIRECTORY=/var/lib/drone-companion/application-records"
+ExecStart=/opt/drone-companion/venv/bin/python /opt/drone-companion/main.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
