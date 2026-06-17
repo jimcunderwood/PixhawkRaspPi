@@ -44,6 +44,7 @@ class ConnectionManager:
         self._lock = threading.Lock()
         self._prearm_messages = deque(maxlen=20)
         self._last_status_text = None
+        self._distance_sensors = {}
 
     def connect(self) -> bool:
         """
@@ -97,6 +98,7 @@ class ConnectionManager:
                 self.vehicle = connect(connection_string, **connect_kwargs)
 
             self._register_status_text_listener()
+            self._register_distance_sensor_listener()
             logger.info("Successfully connected to Pixhawk")
             self.connected = True
             self._trigger_callback('connected')
@@ -116,6 +118,10 @@ class ConnectionManager:
         if self.vehicle:
             try:
                 self.vehicle.remove_message_listener('STATUSTEXT', self._handle_status_text)
+            except Exception:
+                pass
+            try:
+                self.vehicle.remove_message_listener('DISTANCE_SENSOR', self._handle_distance_sensor)
             except Exception:
                 pass
             self.vehicle.close()
@@ -151,6 +157,16 @@ class ConnectionManager:
         except Exception as e:
             logger.warning(f"Unable to register STATUSTEXT listener: {str(e)}")
 
+    def _register_distance_sensor_listener(self):
+        """Track live DISTANCE_SENSOR MAVLink updates for each Pixhawk rangefinder."""
+        if not self.vehicle:
+            return
+
+        try:
+            self.vehicle.add_message_listener('DISTANCE_SENSOR', self._handle_distance_sensor)
+        except Exception as e:
+            logger.warning(f"Unable to register DISTANCE_SENSOR listener: {str(e)}")
+
     def _handle_status_text(self, vehicle, name, message):
         """Store recent STATUSTEXT messages that explain pre-arm readiness."""
         try:
@@ -174,6 +190,54 @@ class ConnectionManager:
                     self._prearm_messages.append(entry)
         except Exception as e:
             logger.debug(f"Failed to process STATUSTEXT message: {str(e)}")
+
+    def _handle_distance_sensor(self, vehicle, name, message):
+        """Store the latest MAVLink distance sensor reading."""
+        try:
+            sensor_data = self._normalize_distance_sensor_message(message)
+            if not sensor_data:
+                return
+
+            sensor_id = sensor_data.get("sensor_id")
+            cache_key = sensor_id
+            if cache_key is None:
+                cache_key = f"orientation:{sensor_data.get('orientation')}:{sensor_data.get('timestamp')}"
+
+            with self._lock:
+                self._distance_sensors[cache_key] = sensor_data
+        except Exception as e:
+            logger.debug(f"Failed to process DISTANCE_SENSOR message: {str(e)}")
+
+    def _normalize_distance_sensor_message(self, message) -> dict:
+        """Convert a MAVLink DISTANCE_SENSOR message to a cached status record."""
+        current_distance_cm = getattr(message, "current_distance", None)
+        min_distance_cm = getattr(message, "min_distance", None)
+        max_distance_cm = getattr(message, "max_distance", None)
+
+        def _cm_to_meters(value):
+            if value is None:
+                return None
+            try:
+                return float(value) / 100.0
+            except (TypeError, ValueError):
+                return None
+
+        return {
+            "timestamp": time.time(),
+            "time_boot_ms": getattr(message, "time_boot_ms", None),
+            "sensor_id": getattr(message, "id", None),
+            "orientation": getattr(message, "orientation", None),
+            "type": getattr(message, "type", None),
+            "current_distance_meters": _cm_to_meters(current_distance_cm),
+            "current_distance_cm": current_distance_cm,
+            "min_distance_meters": _cm_to_meters(min_distance_cm),
+            "max_distance_meters": _cm_to_meters(max_distance_cm),
+            "covariance_cm2": getattr(message, "covariance", None),
+            "horizontal_fov": getattr(message, "horizontal_fov", None),
+            "vertical_fov": getattr(message, "vertical_fov", None),
+            "quaternion": getattr(message, "quaternion", None),
+            "signal_quality": getattr(message, "signal_quality", None),
+        }
 
     def _start_monitor_thread(self):
         """Start background thread to monitor connection health"""
@@ -473,6 +537,7 @@ class ConnectionManager:
                 ),
                 "terrain": self._terrain_status(),
             },
+            "distance_sensors": self._distance_sensor_snapshot(),
         }
 
     def _navigation_parameter_updates(self, navigation_config: dict) -> dict:
@@ -577,17 +642,31 @@ class ConnectionManager:
                 return None
 
     def _proximity_status(self) -> dict:
-        proximity = getattr(self.vehicle, "proximity", None) if self.vehicle else None
-        if not proximity:
+        sensor = self._selected_distance_sensor(role="obstacle_avoidance")
+        if sensor:
             return {
-                "available": False,
-                "source": None,
+                "available": True,
+                "source": "mavlink.distance_sensor",
+                "sensor_id": sensor.get("sensor_id"),
+                "orientation": sensor.get("orientation"),
+                "distance_meters": sensor.get("current_distance_meters"),
+                "min_distance_meters": sensor.get("min_distance_meters"),
+                "max_distance_meters": sensor.get("max_distance_meters"),
+                "signal_quality": sensor.get("signal_quality"),
+                "updated_at": sensor.get("timestamp"),
+            }
+
+        proximity = getattr(self.vehicle, "proximity", None) if self.vehicle else None
+        if proximity:
+            return {
+                "available": True,
+                "source": "vehicle.proximity",
+                "distance_meters": getattr(proximity, "distance", None),
             }
 
         return {
-            "available": True,
-            "source": "vehicle",
-            "distance_meters": getattr(proximity, "distance", None),
+            "available": False,
+            "source": None,
         }
 
     # Mission Management
@@ -834,8 +913,24 @@ class ConnectionManager:
         }.get(fix_type)
 
     def _terrain_status(self) -> dict:
+        sensor = self._selected_distance_sensor(role="terrain_following")
+        if sensor:
+            return {
+                "available": True,
+                "source": "mavlink.distance_sensor",
+                "sensor_id": sensor.get("sensor_id"),
+                "orientation": sensor.get("orientation"),
+                "rangefinder_distance_meters": sensor.get("current_distance_meters"),
+                "rangefinder_voltage": None,
+                "min_distance_meters": sensor.get("min_distance_meters"),
+                "max_distance_meters": sensor.get("max_distance_meters"),
+                "signal_quality": sensor.get("signal_quality"),
+                "updated_at": sensor.get("timestamp"),
+            }
+
         rangefinder = getattr(self.vehicle, "rangefinder", None) if self.vehicle else None
         terrain = {
+            "available": False,
             "rangefinder_distance_meters": None,
             "rangefinder_voltage": None,
             "source": None,
@@ -844,13 +939,117 @@ class ConnectionManager:
         if rangefinder:
             terrain.update(
                 {
+                    "available": True,
                     "rangefinder_distance_meters": getattr(rangefinder, "distance", None),
                     "rangefinder_voltage": getattr(rangefinder, "voltage", None),
-                    "source": "rangefinder",
+                    "source": "vehicle.rangefinder",
                 }
             )
 
         return terrain
+
+    def _distance_sensor_snapshot(self) -> list:
+        with self._lock:
+            sensors = list(self._distance_sensors.values())
+
+        sensors.sort(key=lambda sensor: (sensor.get("timestamp") or 0.0, sensor.get("sensor_id") is None))
+        return [
+            {
+                "sensor_id": sensor.get("sensor_id"),
+                "orientation": sensor.get("orientation"),
+                "distance_meters": sensor.get("current_distance_meters"),
+                "min_distance_meters": sensor.get("min_distance_meters"),
+                "max_distance_meters": sensor.get("max_distance_meters"),
+                "signal_quality": sensor.get("signal_quality"),
+                "updated_at": sensor.get("timestamp"),
+                "source": "mavlink.distance_sensor",
+            }
+            for sensor in sensors
+        ]
+
+    def _selected_distance_sensor(self, role: str) -> Optional[dict]:
+        with self._lock:
+            sensors = list(self._distance_sensors.values())
+
+        if not sensors:
+            return None
+
+        sensors = [sensor for sensor in sensors if sensor.get("current_distance_meters") is not None]
+        if not sensors:
+            return None
+
+        preferred_orientation = self._sensor_orientation_for_role(role)
+        if preferred_orientation is not None:
+            oriented = [sensor for sensor in sensors if sensor.get("orientation") == preferred_orientation]
+            if oriented:
+                return max(oriented, key=lambda sensor: sensor.get("timestamp") or 0.0)
+
+        preferred_sensor_id = self._sensor_id_for_role(role)
+        if preferred_sensor_id is not None:
+            preferred = [sensor for sensor in sensors if sensor.get("sensor_id") == preferred_sensor_id]
+            if preferred:
+                return max(preferred, key=lambda sensor: sensor.get("timestamp") or 0.0)
+
+        # Fall back to deterministic ordering when the Pixhawk doesn't expose
+        # a usable orientation value or the expected sensor IDs are missing.
+        if role == "terrain_following":
+            return self._pick_sensor_by_id(sensors, prefer_lowest=True)
+        if role == "obstacle_avoidance":
+            return self._pick_sensor_by_id(sensors, prefer_lowest=False)
+
+        return max(sensors, key=lambda sensor: sensor.get("timestamp") or 0.0)
+
+    def _sensor_orientation_for_role(self, role: str) -> Optional[int]:
+        parameter_name = {
+            "terrain_following": "RNGFND1_ORIENT",
+            "obstacle_avoidance": "RNGFND2_ORIENT",
+        }.get(role)
+        if not parameter_name:
+            return None
+
+        orientation = self._get_parameter(parameter_name)
+        if orientation is None:
+            return None
+
+        try:
+            return int(orientation)
+        except (TypeError, ValueError):
+            return None
+
+    def _sensor_id_for_role(self, role: str) -> Optional[int]:
+        return {
+            "terrain_following": 0,
+            "obstacle_avoidance": 1,
+        }.get(role)
+
+    def _pick_sensor_by_id(self, sensors: list, prefer_lowest: bool = True) -> Optional[dict]:
+        if not sensors:
+            return None
+
+        if not prefer_lowest:
+            def rank(sensor: dict):
+                sensor_id = sensor.get("sensor_id")
+                timestamp = sensor.get("timestamp") or 0.0
+                if sensor_id is None:
+                    return (-1, timestamp)
+                try:
+                    return (int(sensor_id), timestamp)
+                except (TypeError, ValueError):
+                    return (-1, timestamp)
+
+            return max(sensors, key=rank)
+
+        def rank(sensor: dict):
+            sensor_id = sensor.get("sensor_id")
+            timestamp = sensor.get("timestamp") or 0.0
+            if sensor_id is None:
+                return (float("inf"), timestamp)
+            try:
+                return (int(sensor_id), timestamp)
+            except (TypeError, ValueError):
+                return (float("inf"), timestamp)
+
+        return min(sensors, key=rank)
 
     def get_prearm_status(self) -> dict:
         """Get current pre-arm readiness and recent pre-arm failure messages."""

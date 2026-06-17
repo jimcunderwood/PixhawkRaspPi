@@ -109,7 +109,14 @@ Edit key settings:
 - `API_HOST=0.0.0.0` (accessible from network)
 - `API_PORT=8000`
 - `API_KEY=replace-with-a-long-random-token`
+- `API_KEY_ROLES=viewer:viewer-token,operator:operator-token,maintenance:maintenance-token,admin:admin-token`
+- `IDEMPOTENCY_TTL_SECONDS=300`
+- `CONFIG_DATABASE_FILE=/var/lib/drone-companion/config/profiles.sqlite3`
 - Hardware pins match your wiring
+
+API keys can be assigned one of four roles:
+`viewer` for read-only dashboards, `operator` for vehicle and payload commands,
+`maintenance` for configuration/audit workflows, and `admin` for full access.
 
 ### 3. Test Connection
 
@@ -214,7 +221,9 @@ curl -H "x-api-key: $DRONE_API_KEY" \
 
 Mission edits and vehicle commands require both `x-api-key` and
 `x-control-token`. Acquire a short-lived command authority token before sending
-those requests:
+those requests. UI retries should also send an `Idempotency-Key` or
+`X-Idempotency-Key` header on mutating command requests so repeated submissions
+return the original response instead of executing again:
 
 ```bash
 CONTROL_TOKEN=$(
@@ -233,6 +242,7 @@ curl -X POST http://localhost:8000/api/v1/mission/add-waypoint \
   -H "Content-Type: application/json" \
   -H "x-api-key: $DRONE_API_KEY" \
   -H "x-control-token: $CONTROL_TOKEN" \
+  -H "Idempotency-Key: add-waypoint-001" \
   -d '{
     "location": {
       "latitude": 40.7128,
@@ -242,11 +252,64 @@ curl -X POST http://localhost:8000/api/v1/mission/add-waypoint \
   }'
 ```
 
-### 5. WebSocket Telemetry Stream
+### 5. Update Calibration Values
+
+Calibration updates require an API key, command authority token, and an
+idempotency key. Changes are applied to the running companion process and
+recorded in the audit log as `config.calibration_update`.
+
+```bash
+curl -X PATCH http://localhost:8000/api/v1/config/calibration \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $DRONE_API_KEY" \
+  -H "x-control-token: $CONTROL_TOKEN" \
+  -H "Idempotency-Key: calibration-001" \
+  -d '{
+    "flow_sensor": {"pulses_per_liter": 500},
+    "pressure_sensor": {"min_voltage": 0.5, "max_voltage": 4.5},
+    "tank_level_sensor": {"capacity_liters": 12, "minimum_level_percent": 15},
+    "terrain_sensor": {"min_agl_meters": 2, "max_agl_meters": 120}
+  }'
+```
+
+### 6. Store and Reapply Configuration Profiles
+
+Configuration profiles are stored in SQLite at `CONFIG_DATABASE_FILE`. A profile
+captures the current runtime configuration, navigation configuration, and
+calibration values so it can be retrieved and reapplied later.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/config/profiles \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $DRONE_API_KEY" \
+  -H "x-control-token: $CONTROL_TOKEN" \
+  -H "Idempotency-Key: config-profile-store-001" \
+  -d '{"name":"field-baseline","description":"Known-good runtime setup"}'
+
+curl -H "x-api-key: $DRONE_API_KEY" \
+  http://localhost:8000/api/v1/config/profiles/field-baseline
+
+curl -X POST http://localhost:8000/api/v1/config/profiles/field-baseline/apply \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $DRONE_API_KEY" \
+  -H "x-control-token: $CONTROL_TOKEN" \
+  -H "Idempotency-Key: config-profile-apply-001" \
+  -d '{"apply_to_pixhawk":false}'
+```
+
+### 7. WebSocket Telemetry Stream
 
 ```bash
 # Using wscat or websocat
 wscat -c "ws://localhost:8000/ws/telemetry?api_key=$DRONE_API_KEY"
+```
+
+### 8. WebSocket Command/Event Stream
+
+```bash
+# Emits command.accepted, command.blocked, command.failed, authority,
+# emergency, mission, and spray-record events.
+wscat -c "ws://localhost:8000/ws/events?api_key=$DRONE_API_KEY"
 ```
 
 ## Troubleshooting

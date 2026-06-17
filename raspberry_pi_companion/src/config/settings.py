@@ -26,6 +26,31 @@ def _parse_csv(value: str) -> list:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _parse_api_key_roles(value: str) -> dict:
+    roles = {"viewer", "operator", "admin", "maintenance"}
+    api_key_roles = {}
+
+    for item in _parse_csv(value):
+        if "=" in item:
+            first, second = item.split("=", 1)
+        elif ":" in item:
+            first, second = item.split(":", 1)
+        else:
+            continue
+
+        first = first.strip()
+        second = second.strip()
+        if not first or not second:
+            continue
+
+        if first.lower() in roles:
+            api_key_roles[second] = first.lower()
+        elif second.lower() in roles:
+            api_key_roles[first] = second.lower()
+
+    return api_key_roles
+
+
 def _parse_optional_int(value: str) -> int | None:
     value = value.strip()
     if not value:
@@ -68,10 +93,13 @@ class APIConfig:
     port: int = int(os.getenv("API_PORT", "8000"))
     debug: bool = _parse_bool(os.getenv("API_DEBUG", "False"))
     api_key: str = os.getenv("API_KEY", "")
+    api_key_role: str = os.getenv("API_KEY_ROLE", "admin").strip().lower()
+    api_key_roles: dict = None
     auth_enabled: bool = _parse_bool(os.getenv("API_AUTH_ENABLED", "True"))
     safety_gates_enabled: bool = _parse_bool(os.getenv("SAFETY_GATES_ENABLED", "True"))
     command_authority_enabled: bool = _parse_bool(os.getenv("COMMAND_AUTHORITY_ENABLED", "True"))
     command_authority_lease_seconds: int = int(os.getenv("COMMAND_AUTHORITY_LEASE_SECONDS", "30"))
+    idempotency_ttl_seconds: int = int(os.getenv("IDEMPOTENCY_TTL_SECONDS", "300"))
     telemetry_freshness_enabled: bool = _parse_bool(os.getenv("TELEMETRY_FRESHNESS_ENABLED", "True"))
     telemetry_stale_seconds: float = float(os.getenv("TELEMETRY_STALE_SECONDS", "3"))
     payload_stale_seconds: float = float(os.getenv("PAYLOAD_STALE_SECONDS", "3"))
@@ -79,11 +107,19 @@ class APIConfig:
         "AUDIT_LOG_FILE",
         os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "audit", "events.jsonl"),
     )
+    config_database_file: str = os.getenv(
+        "CONFIG_DATABASE_FILE",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "config", "profiles.sqlite3"),
+    )
     cors_origins: list = None
 
     def __post_init__(self):
         if self.cors_origins is None:
             self.cors_origins = _parse_csv(os.getenv("CORS_ORIGINS", "*")) or ["*"]
+        if self.api_key_roles is None:
+            self.api_key_roles = _parse_api_key_roles(os.getenv("API_KEY_ROLES", ""))
+        if self.api_key and self.api_key not in self.api_key_roles:
+            self.api_key_roles[self.api_key] = self.api_key_role
 
 
 @dataclass

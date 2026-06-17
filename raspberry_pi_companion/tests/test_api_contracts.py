@@ -4,9 +4,12 @@ API contract tests for normalized public models and auth metadata.
 
 import os
 import sys
+import asyncio
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, WebSocketDisconnect
+from fastapi.routing import APIRoute
+from fastapi.responses import Response
 from pydantic import ValidationError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -14,11 +17,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.api import server as server_module
 from src.api.server import (
     ArmRequest,
+    ApiRole,
+    CalibrationConfigRequest,
+    ConfigProfileApplyRequest,
+    ConfigProfileSaveRequest,
     ControlAuthority,
+    ControlAuthorityRequest,
     GoToRequest,
     NavigationConfigRequest,
+    SprayApplicationRecordRequest,
     ServerAPI,
     WaypointRequest,
+    api_auth_context,
 )
 
 
@@ -58,7 +68,34 @@ class FakeConnectionManager:
 
 
 class FakeMissionPlanner:
-    pass
+    def __init__(self):
+        self.mission_items = []
+        self.navigation_config = {
+            "obstacle_avoidance": {},
+            "terrain_following": {},
+        }
+
+    def pause_mission(self):
+        return None
+
+    def resume_mission(self):
+        return None
+
+    def abort_mission(self):
+        return None
+
+    def get_navigation_config(self):
+        return {
+            "obstacle_avoidance": self.navigation_config["obstacle_avoidance"].copy(),
+            "terrain_following": self.navigation_config["terrain_following"].copy(),
+        }
+
+    def update_navigation_config(self, obstacle_avoidance=None, terrain_following=None):
+        if obstacle_avoidance is not None:
+            self.navigation_config["obstacle_avoidance"].update(obstacle_avoidance)
+        if terrain_following is not None:
+            self.navigation_config["terrain_following"].update(terrain_following)
+        return self.get_navigation_config()
 
 
 class FakeCamera:
@@ -80,6 +117,25 @@ class FakePayloadController:
         self.flow_sensor = object()
         self.pressure_sensor = None
         self.tank_level_sensor = None
+        self.calibration = {
+            "flow_sensor": {"pulses_per_liter": 450.0},
+            "pressure_sensor": {
+                "min_voltage": 0.5,
+                "max_voltage": 4.5,
+                "min_psi": 0.0,
+                "max_psi": 150.0,
+            },
+            "tank_level_sensor": {
+                "min_voltage": 0.5,
+                "max_voltage": 4.5,
+                "capacity_liters": 10.0,
+                "minimum_level_percent": 10.0,
+            },
+            "terrain_sensor": {
+                "min_agl_meters": 2.0,
+                "max_agl_meters": 120.0,
+            },
+        }
 
     def get_payload_status(self):
         return {
@@ -93,6 +149,30 @@ class FakePayloadController:
     def list_application_records(self):
         return []
 
+    def get_calibration_config(self):
+        return {
+            group: values.copy()
+            for group, values in self.calibration.items()
+        }
+
+    def update_calibration_config(self, calibration):
+        before = self.get_calibration_config()
+        for group, values in calibration.items():
+            self.calibration[group].update(values)
+        return {
+            "before": before,
+            "after": self.get_calibration_config(),
+            "applied": calibration,
+            "persistent": False,
+        }
+
+    def create_application_record(self, session, metadata=None):
+        return {
+            "session": session,
+            "metadata": metadata or {},
+            "record_file": f"{session}.json",
+        }
+
 
 class FakeTelemetryManager:
     last_update = 9999999999
@@ -105,7 +185,14 @@ class FakeTelemetryManager:
 def server_api(monkeypatch, tmp_path):
     monkeypatch.setattr(server_module.config.api, "auth_enabled", True)
     monkeypatch.setattr(server_module.config.api, "api_key", "test-key")
+    monkeypatch.setattr(server_module.config.api, "api_key_role", "admin")
+    monkeypatch.setattr(server_module.config.api, "api_key_roles", {"test-key": "admin"})
     monkeypatch.setattr(server_module.config.api, "audit_log_file", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setattr(
+        server_module.config.api,
+        "config_database_file",
+        str(tmp_path / "config" / "profiles.sqlite3"),
+    )
     monkeypatch.setattr(server_module.config.api, "safety_gates_enabled", True)
     return ServerAPI(
         FakeConnectionManager(),
@@ -172,6 +259,70 @@ class FakeRequest:
         self.query_params = query_params
 
 
+class FakeURL:
+    def __init__(self, path, query=""):
+        self.path = path
+        self.query = query
+
+
+class FakeIdempotencyRequest:
+    def __init__(
+        self,
+        method="POST",
+        path="/api/vehicle/arm",
+        query="",
+        headers=None,
+    ):
+        self.method = method
+        self.url = FakeURL(path, query=query)
+        self.headers = headers or {}
+        self.query_params = {}
+
+
+class FakeEventWebSocket:
+    def __init__(self, api_key="test-key", expected_messages=2):
+        self.headers = {}
+        self.query_params = {"api_key": api_key}
+        self.expected_messages = expected_messages
+        self.accepted = False
+        self.closed = False
+        self.sent = []
+        self.disconnect = asyncio.Event()
+
+    async def accept(self):
+        self.accepted = True
+
+    async def close(self, code=1000, reason=None):
+        self.closed = True
+
+    async def send_json(self, data):
+        self.sent.append(data)
+        if len(self.sent) >= self.expected_messages:
+            self.disconnect.set()
+
+    async def receive_text(self):
+        await self.disconnect.wait()
+        raise WebSocketDisconnect()
+
+
+def get_route_endpoint(app, path, method):
+    for route in app.routes:
+        if (
+            isinstance(route, APIRoute)
+            and route.path == path
+            and method in (route.methods or [])
+        ):
+            return route.endpoint
+    raise AssertionError(f"Route not found: {method} {path}")
+
+
+def get_websocket_endpoint(app, path):
+    for route in app.routes:
+        if not isinstance(route, APIRoute) and getattr(route, "path", None) == path:
+            return route.endpoint
+    raise AssertionError(f"WebSocket route not found: {path}")
+
+
 def test_media_routes_advertise_api_key_and_accept_query_key(server_api):
     schema = server_api.get_app().openapi()
     session_photo_schema = schema["paths"][
@@ -194,6 +345,234 @@ def test_media_routes_advertise_api_key_and_accept_query_key(server_api):
     assert error.value.status_code == 401
 
 
+def test_api_key_roles_gate_command_and_audit_access(server_api, monkeypatch):
+    token = api_auth_context.set(None)
+    monkeypatch.setattr(server_module.config.api, "api_key", "")
+    monkeypatch.setattr(
+        server_module.config.api,
+        "api_key_roles",
+        {
+            "viewer-key": "viewer",
+            "operator-key": "operator",
+            "maintenance-key": "maintenance",
+            "admin-key": "admin",
+        },
+    )
+
+    try:
+        viewer = server_api._require_api_key_value("viewer-key")
+        assert viewer.role == ApiRole.VIEWER
+        with pytest.raises(HTTPException) as viewer_command_error:
+            server_api._require_command_role()
+        assert viewer_command_error.value.status_code == 403
+        with pytest.raises(HTTPException) as viewer_audit_error:
+            server_api._require_roles(server_module.AUDIT_ROLES)
+        assert viewer_audit_error.value.status_code == 403
+
+        operator = server_api._require_api_key_value("operator-key")
+        assert operator.role == ApiRole.OPERATOR
+        server_api._require_command_role()
+
+        maintenance = server_api._require_api_key_value("maintenance-key")
+        assert maintenance.role == ApiRole.MAINTENANCE
+        server_api._require_roles(server_module.MAINTENANCE_ROLES)
+        server_api._require_roles(server_module.AUDIT_ROLES)
+        with pytest.raises(HTTPException) as maintenance_command_error:
+            server_api._require_command_role()
+        assert maintenance_command_error.value.status_code == 403
+
+        admin = server_api._require_api_key_value("admin-key")
+        assert admin.role == ApiRole.ADMIN
+        server_api._require_command_role()
+        server_api._require_roles(server_module.AUDIT_ROLES)
+    finally:
+        api_auth_context.reset(token)
+
+
+def test_idempotency_cache_replays_same_request_and_detects_conflict(server_api):
+    request = FakeIdempotencyRequest(
+        headers={"idempotency-key": "retry-1", "x-api-key": "test-key"}
+    )
+    idempotency_key = server_api._get_idempotency_key(request)
+    cache_id = server_api._idempotency_cache_id(request, idempotency_key)
+    fingerprint = server_api._idempotency_fingerprint(request, b'{"armed":true}')
+    response = Response(
+        content=b'{"status":"success"}',
+        status_code=200,
+        media_type="application/json",
+    )
+
+    server_api._store_idempotency_record(cache_id, fingerprint, response, response.body)
+    record = server_api._get_idempotency_record(cache_id)
+    replay = server_api._build_idempotency_replay_response(record)
+    conflicting_fingerprint = server_api._idempotency_fingerprint(
+        request,
+        b'{"armed":false}',
+    )
+
+    assert record["fingerprint"] == fingerprint
+    assert replay.status_code == 200
+    assert replay.headers["x-idempotency-status"] == "replayed"
+    assert replay.body == b'{"status":"success"}'
+    assert conflicting_fingerprint != record["fingerprint"]
+
+
+def test_calibration_config_update_endpoint_updates_values_and_audits(server_api):
+    async def exercise_routes():
+        server_api._require_api_key_value("test-key")
+        acquire_authority = get_route_endpoint(
+            server_api.get_app(),
+            "/api/control/authority",
+            "POST",
+        )
+        get_calibration = get_route_endpoint(
+            server_api.get_app(),
+            "/api/config/calibration",
+            "GET",
+        )
+        update_calibration = get_route_endpoint(
+            server_api.get_app(),
+            "/api/config/calibration",
+            "PATCH",
+        )
+
+        authority_response = await acquire_authority(
+            ControlAuthorityRequest(client_id="maintenance-ui")
+        )
+        token = authority_response.data["authority"]["token"]
+        update_response = await update_calibration(
+            CalibrationConfigRequest(
+                flow_sensor={"pulses_per_liter": 500.0},
+                pressure_sensor={"min_voltage": 0.4, "max_voltage": 4.6},
+                tank_level_sensor={
+                    "capacity_liters": 12.0,
+                    "minimum_level_percent": 15.0,
+                },
+                terrain_sensor={"min_agl_meters": 3.0, "max_agl_meters": 100.0},
+            ),
+            x_control_token=token,
+        )
+        get_response = await get_calibration()
+        return update_response, get_response
+
+    token = api_auth_context.set(None)
+    try:
+        update_response, get_response = asyncio.run(exercise_routes())
+    finally:
+        api_auth_context.reset(token)
+
+    assert update_response.status == "success"
+    calibration = update_response.data["calibration"]
+    assert calibration["flow_sensor"]["pulses_per_liter"] == 500.0
+    assert calibration["pressure_sensor"]["min_voltage"] == 0.4
+    assert calibration["pressure_sensor"]["max_voltage"] == 4.6
+    assert calibration["tank_level_sensor"]["capacity_liters"] == 12.0
+    assert calibration["tank_level_sensor"]["minimum_level_percent"] == 15.0
+    assert calibration["terrain_sensor"]["min_agl_meters"] == 3.0
+    assert calibration["terrain_sensor"]["max_agl_meters"] == 100.0
+    assert get_response.data["calibration"] == calibration
+
+    events = server_api.audit_logger.recent(limit=10, action="config.calibration_update")
+    assert len(events) == 1
+    assert events[0]["outcome"] == "success"
+    assert events[0]["parameters"]["flow_sensor"]["pulses_per_liter"] == 500.0
+    assert events[0]["details"]["before"]["flow_sensor"]["pulses_per_liter"] == 450.0
+    assert events[0]["details"]["after"]["flow_sensor"]["pulses_per_liter"] == 500.0
+
+
+def test_config_profiles_store_retrieve_and_reapply_runtime_values(server_api):
+    async def exercise_routes():
+        server_api._require_api_key_value("test-key")
+        acquire_authority = get_route_endpoint(
+            server_api.get_app(),
+            "/api/control/authority",
+            "POST",
+        )
+        save_profile = get_route_endpoint(
+            server_api.get_app(),
+            "/api/config/profiles",
+            "POST",
+        )
+        list_profiles = get_route_endpoint(
+            server_api.get_app(),
+            "/api/config/profiles",
+            "GET",
+        )
+        get_profile = get_route_endpoint(
+            server_api.get_app(),
+            "/api/config/profiles/{name}",
+            "GET",
+        )
+        apply_profile = get_route_endpoint(
+            server_api.get_app(),
+            "/api/config/profiles/{name}/apply",
+            "POST",
+        )
+
+        authority_response = await acquire_authority(
+            ControlAuthorityRequest(client_id="maintenance-ui")
+        )
+        token = authority_response.data["authority"]["token"]
+        saved = await save_profile(
+            ConfigProfileSaveRequest(
+                name="field-baseline",
+                description="Known-good runtime config",
+            ),
+            x_control_token=token,
+        )
+        listed = await list_profiles()
+        retrieved = await get_profile("field-baseline")
+
+        server_api.payload_controller.update_calibration_config(
+            {"flow_sensor": {"pulses_per_liter": 600.0}}
+        )
+        applied = await apply_profile(
+            "field-baseline",
+            ConfigProfileApplyRequest(),
+            x_control_token=token,
+        )
+        return saved, listed, retrieved, applied
+
+    token = api_auth_context.set(None)
+    try:
+        saved, listed, retrieved, applied = asyncio.run(exercise_routes())
+    finally:
+        api_auth_context.reset(token)
+
+    profile = saved.data["profile"]
+    assert profile["name"] == "field-baseline"
+    assert profile["description"] == "Known-good runtime config"
+    assert {
+        "runtime",
+        "mavlink",
+        "api",
+        "payload",
+        "mission",
+        "telemetry",
+        "navigation",
+        "calibration",
+    }.issubset(profile["configuration"].keys())
+    assert listed.data["profiles"][0]["name"] == "field-baseline"
+    assert retrieved.data["profile"]["configuration"] == profile["configuration"]
+    assert (
+        server_api.payload_controller.calibration["flow_sensor"]["pulses_per_liter"]
+        == 450.0
+    )
+    assert applied.data["result"]["applied"]["calibration"] == [
+        "flow_sensor",
+        "pressure_sensor",
+        "tank_level_sensor",
+        "terrain_sensor",
+    ]
+
+    stored_events = server_api.audit_logger.recent(limit=10, action="config.profile_store")
+    retrieve_events = server_api.audit_logger.recent(limit=10, action="config.profile_retrieve")
+    apply_events = server_api.audit_logger.recent(limit=10, action="config.profile_apply")
+    assert stored_events[0]["outcome"] == "success"
+    assert retrieve_events[0]["outcome"] == "success"
+    assert apply_events[0]["outcome"] == "success"
+
+
 def test_client_bootstrap_and_mission_edit_routes_are_documented(server_api):
     paths = server_api.get_app().openapi()["paths"]
 
@@ -201,6 +580,14 @@ def test_client_bootstrap_and_mission_edit_routes_are_documented(server_api):
     assert "/api/v1/system/info" in paths
     assert "/api/system/audit" in paths
     assert "/api/v1/system/audit" in paths
+    assert "/api/config/calibration" in paths
+    assert "/api/v1/config/calibration" in paths
+    assert "/api/config/profiles" in paths
+    assert "/api/v1/config/profiles" in paths
+    assert "/api/config/profiles/{name}" in paths
+    assert "/api/v1/config/profiles/{name}" in paths
+    assert "/api/config/profiles/{name}/apply" in paths
+    assert "/api/v1/config/profiles/{name}/apply" in paths
     assert "/api/mission/state" in paths
     assert "/api/v1/mission/state" in paths
     assert "/api/navigation/config" in paths
@@ -219,6 +606,48 @@ def test_client_bootstrap_and_mission_edit_routes_are_documented(server_api):
     assert paths["/api/field-boundaries/{name}"]["delete"]["security"] == [
         {"APIKeyHeader": []}
     ]
+    assert paths["/api/config/calibration"]["patch"]["security"] == [
+        {"APIKeyHeader": []}
+    ]
+
+
+def test_openapi_operation_ids_are_clean_and_v1_aliases_preserve_methods(server_api):
+    paths = server_api.get_app().openapi()["paths"]
+    http_methods = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
+    operation_ids = [
+        operation["operationId"]
+        for methods in paths.values()
+        for method, operation in methods.items()
+        if method in http_methods
+    ]
+
+    assert len(operation_ids) == len(set(operation_ids))
+    assert paths["/api/system/info"]["get"]["operationId"] == "getSystemInfo"
+    assert paths["/api/v1/system/info"]["get"]["operationId"] == "v1GetSystemInfo"
+    assert (
+        paths["/api/payload/camera/sessions/{session}/photos/{filename}"]["get"][
+            "operationId"
+        ]
+        == "getPayloadCameraSessionsBySessionPhotosByFilename"
+    )
+    assert (
+        paths["/api/v1/control/authority"]["post"]["operationId"]
+        == "v1PostControlAuthority"
+    )
+    assert (
+        paths["/api/v1/control/authority"]["delete"]["operationId"]
+        == "v1DeleteControlAuthority"
+    )
+
+    for path, methods in paths.items():
+        if not path.startswith("/api/") or path.startswith("/api/v1/"):
+            continue
+
+        v1_path = path.replace("/api/", "/api/v1/", 1)
+        assert v1_path in paths
+        for method in methods:
+            if method in http_methods:
+                assert method in paths[v1_path]
 
 
 def test_safety_gate_blocks_unhealthy_flight_command(server_api):
@@ -259,6 +688,149 @@ def test_audit_logger_records_and_filters_events(server_api):
     filtered = server_api.audit_logger.recent(limit=10, outcome="blocked")
     assert len(filtered) == 1
     assert filtered[0]["action"] == "vehicle.takeoff"
+
+
+def test_command_event_stream_maps_audit_outcomes_and_domain_events(server_api):
+    events = []
+    server_api._subscribe_command_events("test-client", events.append)
+
+    try:
+        server_api._audit_command(
+            "vehicle.arm",
+            "success",
+            parameters={"armed": True},
+        )
+        server_api._audit_http_error(
+            "vehicle.takeoff",
+            {"altitude": 10},
+            HTTPException(status_code=409, detail="blocked"),
+        )
+        server_api._audit_http_error(
+            "vehicle.goto",
+            {"location": "bad"},
+            HTTPException(status_code=500, detail="failed"),
+        )
+        server_api._audit_command("control.authority_acquire", "success")
+        server_api._audit_command("control.authority_release", "success")
+        server_api._audit_command("emergency.land", "success")
+        server_api._audit_command("mission.pixhawk_upload", "success")
+        server_api._audit_command("mission.pixhawk_verify", "success")
+        server_api._audit_command("payload.application_record_create", "success")
+    finally:
+        server_api._unsubscribe_command_events("test-client")
+
+    event_types = [event["type"] for event in events]
+
+    assert "command.accepted" in event_types
+    assert "command.blocked" in event_types
+    assert "command.failed" in event_types
+    assert "authority.acquired" in event_types
+    assert "authority.released" in event_types
+    assert "emergency.triggered" in event_types
+    assert "mission.uploaded" in event_types
+    assert "mission.verified" in event_types
+    assert "spray_record.created" in event_types
+    assert events[0]["action"] == "vehicle.arm"
+    assert events[1]["outcome"] == "blocked"
+    assert events[2]["outcome"] == "failed"
+
+
+def test_command_event_websocket_receives_authority_events(server_api):
+    async def exercise_websocket():
+        websocket = FakeEventWebSocket(expected_messages=2)
+        endpoint = get_websocket_endpoint(server_api.get_app(), "/ws/events")
+        task = asyncio.create_task(endpoint(websocket))
+
+        for _ in range(100):
+            if websocket.accepted and server_api.command_event_subscribers:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            task.cancel()
+            raise AssertionError("Command event WebSocket did not subscribe.")
+
+        server_api._audit_command(
+            "control.authority_acquire",
+            "success",
+            parameters={
+                "client_id": "ground-station",
+                "operator": "pilot",
+                "lease_seconds": None,
+            },
+        )
+        await asyncio.wait_for(task, timeout=1)
+        return websocket.sent
+
+    command_event, authority_event = asyncio.run(exercise_websocket())
+
+    assert command_event["type"] == "command.accepted"
+    assert command_event["action"] == "control.authority_acquire"
+    assert authority_event["type"] == "authority.acquired"
+    assert authority_event["parameters"] == {
+        "client_id": "ground-station",
+        "operator": "pilot",
+        "lease_seconds": None,
+    }
+
+
+def test_operational_routes_emit_specific_command_events(server_api):
+    events = []
+    server_api._subscribe_command_events("test-client", events.append)
+
+    async def exercise_routes():
+        acquire_authority = get_route_endpoint(
+            server_api.get_app(),
+            "/api/control/authority",
+            "POST",
+        )
+        upload_mission = get_route_endpoint(
+            server_api.get_app(),
+            "/api/mission/pixhawk/upload",
+            "POST",
+        )
+        verify_mission = get_route_endpoint(
+            server_api.get_app(),
+            "/api/mission/pixhawk/verify",
+            "GET",
+        )
+        create_spray_record = get_route_endpoint(
+            server_api.get_app(),
+            "/api/payload/spray/sessions/{session}/application-record",
+            "POST",
+        )
+
+        authority_response = await acquire_authority(
+            ControlAuthorityRequest(client_id="ground-station")
+        )
+        token = authority_response.data["authority"]["token"]
+        upload_response = await upload_mission(x_control_token=token)
+        verify_response = await verify_mission()
+        spray_record_response = await create_spray_record(
+            "session-a",
+            SprayApplicationRecordRequest(product_name="water"),
+            x_control_token=token,
+        )
+        return authority_response, upload_response, verify_response, spray_record_response
+
+    try:
+        (
+            authority_response,
+            upload_response,
+            verify_response,
+            spray_record_response,
+        ) = asyncio.run(exercise_routes())
+    finally:
+        server_api._unsubscribe_command_events("test-client")
+
+    assert authority_response.status == "success"
+    assert upload_response.status == "success"
+    assert verify_response.status == "success"
+    assert spray_record_response.status == "success"
+
+    event_types = [event["type"] for event in events]
+    assert "mission.uploaded" in event_types
+    assert "mission.verified" in event_types
+    assert "spray_record.created" in event_types
 
 
 def test_control_authority_lease():

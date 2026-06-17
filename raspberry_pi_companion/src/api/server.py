@@ -4,32 +4,109 @@ Main API interface for ground station communication
 """
 
 import asyncio
+import hashlib
 import hmac
 import logging
 import os
+import re
 import secrets
 import shutil
 import tempfile
 import threading
 import time
+from contextvars import ContextVar
+from dataclasses import fields, is_dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Security, WebSocket, WebSocketDisconnect
 from fastapi.routing import APIRoute
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.background import BackgroundTask
 
 from ..audit.logger import AuditLogger
+from ..config.profiles import ConfigProfileStore
 from ..config.settings import config
 
 logger = logging.getLogger(__name__)
 
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
+COMMAND_OUTCOME_EVENT_TYPES = {
+    "success": "command.accepted",
+    "blocked": "command.blocked",
+    "failed": "command.failed",
+}
+SUCCESS_ACTION_EVENT_TYPES = {
+    "control.authority_acquire": "authority.acquired",
+    "control.authority_release": "authority.released",
+    "mission.pixhawk_upload": "mission.uploaded",
+    "mission.pixhawk_verify": "mission.verified",
+    "payload.application_record_create": "spray_record.created",
+}
+IDEMPOTENCY_HEADER_NAMES = ("idempotency-key", "x-idempotency-key")
+IDEMPOTENT_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+class ApiRole(str, Enum):
+    VIEWER = "viewer"
+    OPERATOR = "operator"
+    ADMIN = "admin"
+    MAINTENANCE = "maintenance"
+
+
+class AuthenticatedPrincipal(BaseModel):
+    role: ApiRole
+    api_key_id: Optional[str] = None
+
+
+api_auth_context: ContextVar[Optional[AuthenticatedPrincipal]] = ContextVar(
+    "api_auth_context",
+    default=None,
+)
+READ_ROLES = {ApiRole.VIEWER, ApiRole.OPERATOR, ApiRole.ADMIN, ApiRole.MAINTENANCE}
+COMMAND_ROLES = {ApiRole.OPERATOR, ApiRole.ADMIN}
+AUTHORITY_ROLES = {ApiRole.OPERATOR, ApiRole.ADMIN, ApiRole.MAINTENANCE}
+MAINTENANCE_ROLES = {ApiRole.OPERATOR, ApiRole.ADMIN, ApiRole.MAINTENANCE}
+AUDIT_ROLES = {ApiRole.ADMIN, ApiRole.MAINTENANCE}
+
+
+def _to_lower_camel(tokens: List[str]) -> str:
+    words = [token for token in tokens if token]
+    if not words:
+        return "operation"
+
+    return words[0].lower() + "".join(
+        word[:1].upper() + word[1:] for word in words[1:]
+    )
+
+
+def clean_openapi_operation_id(route: APIRoute) -> str:
+    """Generate stable, client-friendly operation IDs from method and path."""
+    methods = sorted(route.methods or [])
+    method = methods[0].lower() if methods else "operation"
+    path = getattr(route, "path_format", route.path)
+    parts = []
+
+    for raw_segment in path.strip("/").split("/"):
+        if not raw_segment or raw_segment == "api":
+            continue
+
+        if raw_segment.startswith("{") and raw_segment.endswith("}"):
+            segment_tokens = ["by", raw_segment[1:-1]]
+        else:
+            segment_tokens = re.split(r"[^0-9A-Za-z]+", raw_segment)
+
+        parts.extend(token.lower() for token in segment_tokens if token)
+
+    if parts and re.fullmatch(r"v[0-9]+", parts[0]):
+        version = parts.pop(0)
+        return _to_lower_camel([version, method, *parts])
+
+    return _to_lower_camel([method, *parts])
 
 DARK_SWAGGER_CSS = """
 <style>
@@ -312,6 +389,89 @@ class NavigationConfigRequest(BaseModel):
     apply_to_pixhawk: bool = False
 
 
+class FlowSensorCalibrationRequest(BaseModel):
+    pulses_per_liter: Optional[float] = Field(None, gt=0.0, le=100000.0)
+
+
+class PressureSensorCalibrationRequest(BaseModel):
+    min_voltage: Optional[float] = Field(None, ge=0.0, le=10.0)
+    max_voltage: Optional[float] = Field(None, gt=0.0, le=10.0)
+    min_psi: Optional[float] = Field(None, ge=0.0, le=10000.0)
+    max_psi: Optional[float] = Field(None, gt=0.0, le=10000.0)
+
+    @model_validator(mode="after")
+    def validate_ranges(self):
+        if (
+            self.min_voltage is not None
+            and self.max_voltage is not None
+            and self.max_voltage <= self.min_voltage
+        ):
+            raise ValueError("pressure_sensor.max_voltage must be greater than min_voltage")
+        if (
+            self.min_psi is not None
+            and self.max_psi is not None
+            and self.max_psi <= self.min_psi
+        ):
+            raise ValueError("pressure_sensor.max_psi must be greater than min_psi")
+        return self
+
+
+class TankLevelCalibrationRequest(BaseModel):
+    min_voltage: Optional[float] = Field(None, ge=0.0, le=10.0)
+    max_voltage: Optional[float] = Field(None, gt=0.0, le=10.0)
+    capacity_liters: Optional[float] = Field(None, gt=0.0, le=100000.0)
+    minimum_level_percent: Optional[float] = Field(None, ge=0.0, le=100.0)
+
+    @model_validator(mode="after")
+    def validate_ranges(self):
+        if (
+            self.min_voltage is not None
+            and self.max_voltage is not None
+            and self.max_voltage <= self.min_voltage
+        ):
+            raise ValueError("tank_level_sensor.max_voltage must be greater than min_voltage")
+        return self
+
+
+class TerrainSensorCalibrationRequest(BaseModel):
+    min_agl_meters: Optional[float] = Field(None, ge=0.0, le=config.mission.max_altitude)
+    max_agl_meters: Optional[float] = Field(None, gt=0.0, le=config.mission.max_altitude)
+
+    @model_validator(mode="after")
+    def validate_ranges(self):
+        if (
+            self.min_agl_meters is not None
+            and self.max_agl_meters is not None
+            and self.max_agl_meters <= self.min_agl_meters
+        ):
+            raise ValueError("terrain_sensor.max_agl_meters must be greater than min_agl_meters")
+        return self
+
+
+class CalibrationConfigRequest(BaseModel):
+    flow_sensor: Optional[FlowSensorCalibrationRequest] = None
+    pressure_sensor: Optional[PressureSensorCalibrationRequest] = None
+    tank_level_sensor: Optional[TankLevelCalibrationRequest] = None
+    terrain_sensor: Optional[TerrainSensorCalibrationRequest] = None
+
+    @model_validator(mode="after")
+    def require_update(self):
+        updates = self.model_dump(exclude_none=True)
+        if not any(updates.get(group) for group in updates):
+            raise ValueError("At least one calibration group is required")
+        return self
+
+
+class ConfigProfileSaveRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_. -]+$")
+    description: Optional[str] = Field(None, max_length=500)
+    overwrite: bool = True
+
+
+class ConfigProfileApplyRequest(BaseModel):
+    apply_to_pixhawk: bool = False
+
+
 class PayloadAction(str, Enum):
     SPRAY_START = "spray_start"
     SPRAY_STOP = "spray_stop"
@@ -471,7 +631,13 @@ class ServerAPI:
         self.payload_controller = payload_controller
         self.telemetry_manager = telemetry_manager
         self.active_websocket_clients: Set[WebSocket] = set()
+        self.active_event_websocket_clients: Set[WebSocket] = set()
+        self.command_event_subscribers: Dict[str, Callable[[Dict], object]] = {}
+        self.command_event_lock = threading.Lock()
+        self.idempotency_records: Dict[str, Dict] = {}
+        self.idempotency_lock = threading.Lock()
         self.audit_logger = AuditLogger(config.api.audit_log_file)
+        self.config_profiles = ConfigProfileStore(config.api.config_database_file)
         self.control_authority = ControlAuthority(config.api.command_authority_lease_seconds)
 
         self.app = FastAPI(
@@ -484,16 +650,22 @@ class ServerAPI:
             docs_url=None,
             redoc_url="/redoc",
             openapi_url="/openapi.json",
+            generate_unique_id_function=clean_openapi_operation_id,
         )
         self._setup_middleware()
         self._setup_routes()
         self._setup_versioned_api_aliases()
 
-        if config.api.auth_enabled and not config.api.api_key:
-            logger.warning("API authentication is enabled, but API_KEY is not configured.")
+        if config.api.auth_enabled and not self._configured_api_key_roles():
+            logger.warning("API authentication is enabled, but no API keys are configured.")
 
     def _setup_middleware(self):
         """Setup CORS and other middleware"""
+
+        @self.app.middleware("http")
+        async def idempotency_middleware(request: Request, call_next):
+            return await self._handle_idempotent_request(request, call_next)
+
         self.app.add_middleware(
             CORSMiddleware,
             allow_origins=config.api.cors_origins,
@@ -502,9 +674,163 @@ class ServerAPI:
             allow_headers=["*"],
         )
 
-    def _require_api_key(self, api_key: Optional[str] = Security(api_key_header)):
+    def _get_idempotency_key(self, request: Request) -> Optional[str]:
+        for header_name in IDEMPOTENCY_HEADER_NAMES:
+            key = request.headers.get(header_name)
+            if key and key.strip():
+                return key.strip()
+        return None
+
+    def _idempotency_cache_id(self, request: Request, idempotency_key: str) -> str:
+        supplied_key = request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
+        api_key_hash = hashlib.sha256(supplied_key.encode()).hexdigest()
+        return hashlib.sha256(f"{api_key_hash}:{idempotency_key}".encode()).hexdigest()
+
+    def _idempotency_fingerprint(self, request: Request, body: bytes) -> str:
+        body_hash = hashlib.sha256(body).hexdigest()
+        fingerprint = "\n".join(
+            [
+                request.method.upper(),
+                request.url.path,
+                request.url.query,
+                body_hash,
+            ]
+        )
+        return hashlib.sha256(fingerprint.encode()).hexdigest()
+
+    def _prune_idempotency_records(self):
+        now = time.time()
+        expired_keys = [
+            cache_id
+            for cache_id, record in self.idempotency_records.items()
+            if record["expires_at"] <= now
+        ]
+        for cache_id in expired_keys:
+            self.idempotency_records.pop(cache_id, None)
+
+    def _get_idempotency_record(self, cache_id: str) -> Optional[Dict]:
+        with self.idempotency_lock:
+            self._prune_idempotency_records()
+            return self.idempotency_records.get(cache_id)
+
+    def _store_idempotency_record(
+        self,
+        cache_id: str,
+        fingerprint: str,
+        response: Response,
+        body: bytes,
+    ):
+        headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower() not in {"content-length", "transfer-encoding"}
+        }
+        with self.idempotency_lock:
+            self._prune_idempotency_records()
+            self.idempotency_records[cache_id] = {
+                "fingerprint": fingerprint,
+                "status_code": response.status_code,
+                "headers": headers,
+                "body": body,
+                "media_type": response.media_type,
+                "expires_at": time.time() + config.api.idempotency_ttl_seconds,
+            }
+
+    def _build_idempotency_replay_response(self, record: Dict) -> Response:
+        headers = dict(record["headers"])
+        headers["x-idempotency-status"] = "replayed"
+        return Response(
+            content=record["body"],
+            status_code=record["status_code"],
+            headers=headers,
+            media_type=record["media_type"],
+        )
+
+    async def _handle_idempotent_request(self, request: Request, call_next):
+        if request.method.upper() not in IDEMPOTENT_HTTP_METHODS:
+            return await call_next(request)
+        if not request.url.path.startswith("/api/"):
+            return await call_next(request)
+
+        idempotency_key = self._get_idempotency_key(request)
+        if not idempotency_key:
+            return await call_next(request)
+        if len(idempotency_key) > 200:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Idempotency key must be 200 characters or fewer."},
+            )
+
+        body = await request.body()
+        async def receive_body():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        request._receive = receive_body
+        cache_id = self._idempotency_cache_id(request, idempotency_key)
+        fingerprint = self._idempotency_fingerprint(request, body)
+        record = self._get_idempotency_record(cache_id)
+        if record:
+            if record["fingerprint"] != fingerprint:
+                return JSONResponse(
+                    status_code=409,
+                    headers={"x-idempotency-status": "conflict"},
+                    content={
+                        "detail": "Idempotency key was already used for a different request."
+                    },
+                )
+            return self._build_idempotency_replay_response(record)
+
+        response = await call_next(request)
+        response_body = b""
+        async for chunk in response.body_iterator:
+            response_body += chunk
+
+        self._store_idempotency_record(cache_id, fingerprint, response, response_body)
+        headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower() not in {"content-length", "transfer-encoding"}
+        }
+        headers["x-idempotency-status"] = "stored"
+        return Response(
+            content=response_body,
+            status_code=response.status_code,
+            headers=headers,
+            media_type=response.media_type,
+        )
+
+    def _coerce_api_role(self, role: str) -> ApiRole:
+        try:
+            return ApiRole((role or "").strip().lower())
+        except ValueError:
+            raise HTTPException(status_code=503, detail=f"Invalid API role configured: {role}.")
+
+    def _configured_api_key_roles(self) -> Dict[str, str]:
+        api_key_roles = dict(config.api.api_key_roles or {})
+        if config.api.api_key and config.api.api_key not in api_key_roles:
+            api_key_roles[config.api.api_key] = config.api.api_key_role
+        return api_key_roles
+
+    def _api_key_id(self, api_key: str) -> str:
+        return hashlib.sha256(api_key.encode()).hexdigest()[:12]
+
+    def _set_auth_context(
+        self,
+        principal: AuthenticatedPrincipal,
+        request: Optional[Request] = None,
+    ) -> AuthenticatedPrincipal:
+        api_auth_context.set(principal)
+        if request is not None and hasattr(request, "state"):
+            request.state.auth = principal
+        return principal
+
+    def _require_api_key(
+        self,
+        request: Request,
+        api_key: Optional[str] = Security(api_key_header),
+    ):
         """Validate the shared API key for control endpoints."""
-        self._require_api_key_value(api_key)
+        return self._require_api_key_value(api_key, request=request)
 
     def _require_api_key_header_or_query(
         self,
@@ -512,21 +838,71 @@ class ServerAPI:
         api_key: Optional[str] = Security(api_key_header),
     ):
         """Validate API key supplied by header or query parameter."""
-        self._require_api_key_value(api_key or request.query_params.get("api_key"))
+        return self._require_api_key_value(
+            api_key or request.query_params.get("api_key"),
+            request=request,
+        )
 
-    def _require_api_key_value(self, api_key: Optional[str]):
+    def _require_api_key_value(
+        self,
+        api_key: Optional[str],
+        request: Optional[Request] = None,
+    ) -> AuthenticatedPrincipal:
         """Validate a supplied shared API key."""
         if not config.api.auth_enabled:
-            return
-
-        if not config.api.api_key:
-            raise HTTPException(
-                status_code=503,
-                detail="API_KEY is not configured on the companion computer.",
+            return self._set_auth_context(
+                AuthenticatedPrincipal(role=ApiRole.ADMIN),
+                request=request,
             )
 
-        if not api_key or not hmac.compare_digest(api_key, config.api.api_key):
-            raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+        api_key_roles = self._configured_api_key_roles()
+        if not api_key_roles:
+            raise HTTPException(
+                status_code=503,
+                detail="No API keys are configured on the companion computer.",
+            )
+
+        for configured_key, role in api_key_roles.items():
+            if api_key and hmac.compare_digest(api_key, configured_key):
+                return self._set_auth_context(
+                    AuthenticatedPrincipal(
+                        role=self._coerce_api_role(role),
+                        api_key_id=self._api_key_id(configured_key),
+                    ),
+                    request=request,
+                )
+
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+
+    def _require_roles(
+        self,
+        allowed_roles: Set[ApiRole],
+        principal: Optional[AuthenticatedPrincipal] = None,
+    ) -> Optional[AuthenticatedPrincipal]:
+        if not config.api.auth_enabled:
+            return principal or AuthenticatedPrincipal(role=ApiRole.ADMIN)
+
+        principal = principal or api_auth_context.get()
+        if principal is None:
+            return None
+        if principal.role not in allowed_roles:
+            allowed = ", ".join(sorted(role.value for role in allowed_roles))
+            raise HTTPException(
+                status_code=403,
+                detail=f"API role '{principal.role.value}' is not allowed. Required role: {allowed}.",
+            )
+        return principal
+
+    def _require_audit_role(
+        self,
+        request: Request,
+        api_key: Optional[str] = Security(api_key_header),
+    ):
+        principal = self._require_api_key_value(api_key, request=request)
+        return self._require_roles(AUDIT_ROLES, principal)
+
+    def _require_command_role(self, allowed_roles: Set[ApiRole] = COMMAND_ROLES):
+        self._require_roles(allowed_roles)
 
     def _require_success(self, succeeded: bool, error_message: str, status_code: int = 409):
         if not succeeded:
@@ -544,6 +920,135 @@ class ServerAPI:
         if hasattr(self.connection_manager, "get_navigation_status"):
             return self.connection_manager.get_navigation_status()
         return {}
+
+    def _get_calibration_config(self) -> Dict:
+        if hasattr(self.payload_controller, "get_calibration_config"):
+            return self.payload_controller.get_calibration_config()
+        return {}
+
+    def _update_calibration_config(self, calibration: Dict) -> Dict:
+        if not hasattr(self.payload_controller, "update_calibration_config"):
+            raise HTTPException(status_code=503, detail="Calibration updates are not available.")
+        return self.payload_controller.update_calibration_config(calibration)
+
+    def _serialize_config_value(self, value):
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, dict):
+            return {
+                key: self._serialize_config_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._serialize_config_value(item) for item in value]
+        return value
+
+    def _serialize_dataclass_config(self, config_section) -> Dict:
+        if not is_dataclass(config_section):
+            return {}
+        return {
+            field.name: self._serialize_config_value(getattr(config_section, field.name))
+            for field in fields(config_section)
+        }
+
+    def _current_config_snapshot(self) -> Dict:
+        return {
+            "runtime": {
+                "environment": config.environment,
+                "log_level": config.log_level,
+            },
+            "mavlink": self._serialize_dataclass_config(config.mavlink),
+            "api": self._serialize_dataclass_config(config.api),
+            "payload": self._serialize_dataclass_config(config.payload),
+            "mission": self._serialize_dataclass_config(config.mission),
+            "telemetry": self._serialize_dataclass_config(config.telemetry),
+            "navigation": self._get_navigation_config(),
+            "calibration": self._get_calibration_config(),
+        }
+
+    def _coerce_config_value(self, current_value, new_value):
+        if isinstance(current_value, Enum):
+            return type(current_value)(new_value)
+        return new_value
+
+    def _apply_dataclass_config(self, target, values: Dict) -> List[str]:
+        if not is_dataclass(target):
+            return []
+
+        applied_fields = []
+        valid_fields = {field.name for field in fields(target)}
+        for field_name, value in (values or {}).items():
+            if field_name not in valid_fields:
+                continue
+            current_value = getattr(target, field_name)
+            setattr(target, field_name, self._coerce_config_value(current_value, value))
+            applied_fields.append(field_name)
+
+        return applied_fields
+
+    def _apply_config_snapshot(self, configuration: Dict, apply_to_pixhawk: bool = False) -> Dict:
+        applied = {}
+        restart_recommended = []
+
+        for section_name, target in (
+            ("mavlink", config.mavlink),
+            ("api", config.api),
+            ("payload", config.payload),
+            ("mission", config.mission),
+            ("telemetry", config.telemetry),
+        ):
+            if section_name not in configuration:
+                continue
+            applied_fields = self._apply_dataclass_config(target, configuration.get(section_name) or {})
+            applied[section_name] = applied_fields
+            if applied_fields:
+                restart_recommended.append(section_name)
+
+        runtime_config = configuration.get("runtime") or {}
+        runtime_applied = []
+        if "environment" in runtime_config:
+            config.environment = runtime_config["environment"]
+            runtime_applied.append("environment")
+        if "log_level" in runtime_config:
+            config.log_level = runtime_config["log_level"]
+            runtime_applied.append("log_level")
+        if runtime_applied:
+            applied["runtime"] = runtime_applied
+            restart_recommended.append("runtime")
+
+        if "api" in applied:
+            self.audit_logger = AuditLogger(config.api.audit_log_file)
+            self.config_profiles = ConfigProfileStore(config.api.config_database_file)
+
+        navigation_result = None
+        pixhawk_apply_result = None
+        navigation_config = configuration.get("navigation")
+        if navigation_config:
+            navigation_result = self.mission_planner.update_navigation_config(
+                obstacle_avoidance=navigation_config.get("obstacle_avoidance"),
+                terrain_following=navigation_config.get("terrain_following"),
+            )
+            applied["navigation"] = sorted(navigation_config.keys())
+            if apply_to_pixhawk:
+                pixhawk_apply_result = self.connection_manager.apply_navigation_config(navigation_result)
+                self._require_success(
+                    pixhawk_apply_result.get("success"),
+                    "Configuration profile applied, but Pixhawk parameter application failed.",
+                )
+
+        calibration_result = None
+        calibration_config = configuration.get("calibration")
+        if calibration_config:
+            calibration_result = self._update_calibration_config(calibration_config)
+            applied["calibration"] = sorted(calibration_config.keys())
+
+        return {
+            "applied": applied,
+            "navigation": navigation_result,
+            "calibration": calibration_result,
+            "pixhawk_apply_result": pixhawk_apply_result,
+            "restart_recommended": sorted(set(restart_recommended)),
+        }
 
     def _get_readiness_data(self) -> Dict:
         vehicle_state = self.connection_manager.get_vehicle_state()
@@ -603,7 +1108,7 @@ class ServerAPI:
             "spray_pump_status": payload_status.get("spray_pump", {}).get("status"),
             "storage": storage,
             "auth_enabled": config.api.auth_enabled,
-            "api_key_configured": bool(config.api.api_key),
+            "api_key_configured": bool(self._configured_api_key_roles()),
             "safety_gates_enabled": config.api.safety_gates_enabled,
             "telemetry_freshness_enabled": config.api.telemetry_freshness_enabled,
             "telemetry_last_update": getattr(self.telemetry_manager, "last_update", 0),
@@ -719,7 +1224,12 @@ class ServerAPI:
                 },
             )
 
-    def _require_command_authority(self, token: Optional[str]):
+    def _require_command_authority(
+        self,
+        token: Optional[str],
+        allowed_roles: Set[ApiRole] = COMMAND_ROLES,
+    ):
+        self._require_command_role(allowed_roles)
         self.control_authority.require(token)
 
     def _get_freshness_blockers(self, command: str) -> List[str]:
@@ -763,6 +1273,86 @@ class ServerAPI:
         self._enforce_freshness_gate(command)
         self._enforce_safety_gate(command)
 
+    async def _authorize_websocket(self, websocket: WebSocket) -> bool:
+        if not config.api.auth_enabled:
+            self._set_auth_context(AuthenticatedPrincipal(role=ApiRole.ADMIN))
+            return True
+
+        supplied_key = websocket.headers.get("x-api-key") or websocket.query_params.get("api_key")
+        api_key_roles = self._configured_api_key_roles()
+        if not api_key_roles:
+            await websocket.close(code=1011, reason="No API keys are configured.")
+            return False
+
+        for configured_key, role in api_key_roles.items():
+            if supplied_key and hmac.compare_digest(supplied_key, configured_key):
+                self._set_auth_context(
+                    AuthenticatedPrincipal(
+                        role=self._coerce_api_role(role),
+                        api_key_id=self._api_key_id(configured_key),
+                    )
+                )
+                return True
+
+        await websocket.close(code=1008, reason="Invalid or missing API key.")
+        return False
+
+    def _subscribe_command_events(self, client_id: str, send_callback: Callable[[Dict], object]):
+        with self.command_event_lock:
+            self.command_event_subscribers[client_id] = send_callback
+        logger.info(f"Client {client_id} subscribed to command events")
+
+    def _unsubscribe_command_events(self, client_id: str):
+        with self.command_event_lock:
+            removed = self.command_event_subscribers.pop(client_id, None)
+        if removed:
+            logger.info(f"Client {client_id} unsubscribed from command events")
+
+    def _publish_command_event(self, event: Dict):
+        disconnected = []
+        with self.command_event_lock:
+            subscribers = list(self.command_event_subscribers.items())
+
+        for client_id, send_callback in subscribers:
+            try:
+                send_callback(event)
+            except Exception as e:
+                logger.warning(f"Failed to send command event to {client_id}: {str(e)}")
+                disconnected.append(client_id)
+
+        for client_id in disconnected:
+            self._unsubscribe_command_events(client_id)
+
+    def _command_event_from_audit(self, event_type: str, audit_event: Dict) -> Dict:
+        return {
+            "type": event_type,
+            "timestamp": audit_event["timestamp"],
+            "action": audit_event["action"],
+            "outcome": audit_event["outcome"],
+            "parameters": audit_event.get("parameters", {}),
+            "details": audit_event.get("details", {}),
+        }
+
+    def _publish_audit_events(self, audit_event: Dict):
+        event_type = COMMAND_OUTCOME_EVENT_TYPES.get(audit_event["outcome"])
+        if event_type:
+            self._publish_command_event(self._command_event_from_audit(event_type, audit_event))
+
+        if audit_event["outcome"] != "success":
+            return
+
+        action = audit_event["action"]
+        success_event_type = SUCCESS_ACTION_EVENT_TYPES.get(action)
+        if success_event_type:
+            self._publish_command_event(
+                self._command_event_from_audit(success_event_type, audit_event)
+            )
+
+        if action.startswith("emergency."):
+            self._publish_command_event(
+                self._command_event_from_audit("emergency.triggered", audit_event)
+            )
+
     def _audit_command(
         self,
         action: str,
@@ -771,7 +1361,13 @@ class ServerAPI:
         details: Optional[Dict] = None,
     ):
         try:
-            self.audit_logger.record(action, outcome, parameters=parameters, details=details)
+            audit_event = self.audit_logger.record(
+                action,
+                outcome,
+                parameters=parameters,
+                details=details,
+            )
+            self._publish_audit_events(audit_event)
         except Exception as e:
             logger.error(f"Failed to write audit event: {str(e)}")
 
@@ -782,13 +1378,23 @@ class ServerAPI:
 
     def _setup_versioned_api_aliases(self):
         """Expose /api/v1 aliases while preserving existing /api paths."""
-        existing_paths = {route.path for route in self.app.routes}
+        existing_route_methods = {
+            (route.path, method)
+            for route in self.app.routes
+            if isinstance(route, APIRoute)
+            for method in route.methods or []
+        }
         for route in list(self.app.routes):
             if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
                 continue
 
             versioned_path = route.path.replace("/api/", "/api/v1/", 1)
-            if versioned_path in existing_paths:
+            alias_methods = [
+                method
+                for method in sorted(route.methods or [])
+                if (versioned_path, method) not in existing_route_methods
+            ]
+            if not alias_methods:
                 continue
 
             self.app.add_api_route(
@@ -803,18 +1409,19 @@ class ServerAPI:
                 response_description=route.response_description,
                 responses=route.responses,
                 deprecated=route.deprecated,
-                methods=list(route.methods or []),
-                operation_id=f"v1_{route.operation_id}" if route.operation_id else None,
+                methods=alias_methods,
                 include_in_schema=True,
                 response_class=route.response_class,
                 name=f"v1_{route.name}",
             )
-            existing_paths.add(versioned_path)
+            for method in alias_methods:
+                existing_route_methods.add((versioned_path, method))
 
     def _setup_routes(self):
         """Setup all API routes"""
 
         protected = [Depends(self._require_api_key)]
+        protected_audit = [Depends(self._require_audit_role)]
         protected_header_or_query = [Depends(self._require_api_key_header_or_query)]
 
         @self.app.get("/health", tags=["System"])
@@ -846,10 +1453,13 @@ class ServerAPI:
                         "safety_gates_enabled": config.api.safety_gates_enabled,
                         "command_authority_enabled": config.api.command_authority_enabled,
                         "command_authority_lease_seconds": config.api.command_authority_lease_seconds,
+                        "idempotency_ttl_seconds": config.api.idempotency_ttl_seconds,
+                        "roles": [role.value for role in ApiRole],
                         "telemetry_freshness_enabled": config.api.telemetry_freshness_enabled,
                         "telemetry_stale_seconds": config.api.telemetry_stale_seconds,
                         "payload_stale_seconds": config.api.payload_stale_seconds,
                         "audit_log_file": config.api.audit_log_file,
+                        "config_database_file": config.api.config_database_file,
                         "cors_origins": config.api.cors_origins,
                     },
                     "mavlink": {
@@ -953,7 +1563,7 @@ class ServerAPI:
             "/api/system/audit",
             response_model=StatusResponse,
             tags=["System"],
-            dependencies=protected,
+            dependencies=protected_audit,
         )
         async def get_audit_events(
             limit: int = 100,
@@ -995,23 +1605,30 @@ class ServerAPI:
             dependencies=protected,
         )
         async def acquire_control_authority(request: ControlAuthorityRequest):
-            authority = self.control_authority.acquire(
-                request.client_id,
-                operator=request.operator,
-                force=request.force,
-                lease_seconds=request.lease_seconds,
-            )
-            self._audit_command(
-                "control.authority_acquire",
-                "success",
-                parameters=request.model_dump(exclude={"force"}),
-                details={"forced": request.force},
-            )
-            return StatusResponse(
-                status="success",
-                message="Control authority acquired",
-                data=authority,
-            )
+            action = "control.authority_acquire"
+            parameters = request.model_dump(exclude={"force"})
+            try:
+                self._require_command_role(AUTHORITY_ROLES)
+                authority = self.control_authority.acquire(
+                    request.client_id,
+                    operator=request.operator,
+                    force=request.force,
+                    lease_seconds=request.lease_seconds,
+                )
+                self._audit_command(
+                    action,
+                    "success",
+                    parameters=parameters,
+                    details={"forced": request.force},
+                )
+                return StatusResponse(
+                    status="success",
+                    message="Control authority acquired",
+                    data=authority,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
 
         @self.app.post(
             "/api/control/authority/renew",
@@ -1023,20 +1640,23 @@ class ServerAPI:
             request: ControlAuthorityRequest,
             x_control_token: Optional[str] = Header(None),
         ):
-            authority = self.control_authority.renew(
-                x_control_token,
-                lease_seconds=request.lease_seconds,
-            )
-            self._audit_command(
-                "control.authority_renew",
-                "success",
-                parameters={"client_id": request.client_id, "operator": request.operator},
-            )
-            return StatusResponse(
-                status="success",
-                message="Control authority renewed",
-                data=authority,
-            )
+            action = "control.authority_renew"
+            parameters = {"client_id": request.client_id, "operator": request.operator}
+            try:
+                self._require_command_role(AUTHORITY_ROLES)
+                authority = self.control_authority.renew(
+                    x_control_token,
+                    lease_seconds=request.lease_seconds,
+                )
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(
+                    status="success",
+                    message="Control authority renewed",
+                    data=authority,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
 
         @self.app.delete(
             "/api/control/authority",
@@ -1045,17 +1665,19 @@ class ServerAPI:
             dependencies=protected,
         )
         async def release_control_authority(x_control_token: Optional[str] = Header(None)):
-            released = self.control_authority.release(x_control_token)
-            self._audit_command(
-                "control.authority_release",
-                "success",
-                details=released,
-            )
-            return StatusResponse(
-                status="success",
-                message="Control authority released",
-                data=released,
-            )
+            action = "control.authority_release"
+            try:
+                self._require_command_role(AUTHORITY_ROLES)
+                released = self.control_authority.release(x_control_token)
+                self._audit_command(action, "success", details=released)
+                return StatusResponse(
+                    status="success",
+                    message="Control authority released",
+                    data=released,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, {}, e)
+                raise
 
         @self.app.get(
             "/api/readiness",
@@ -1110,6 +1732,190 @@ class ServerAPI:
             return StatusResponse(status="success", message="Pre-arm status retrieved", data=status)
 
         @self.app.get(
+            "/api/config/calibration",
+            response_model=StatusResponse,
+            tags=["System"],
+            dependencies=protected,
+        )
+        async def get_calibration_config():
+            return StatusResponse(
+                status="success",
+                message="Calibration configuration retrieved",
+                data={"calibration": self._get_calibration_config()},
+            )
+
+        @self.app.patch(
+            "/api/config/calibration",
+            response_model=StatusResponse,
+            tags=["System"],
+            dependencies=protected,
+        )
+        @self.app.post(
+            "/api/config/calibration",
+            response_model=StatusResponse,
+            tags=["System"],
+            dependencies=protected,
+        )
+        async def update_calibration_config(
+            request: CalibrationConfigRequest,
+            x_control_token: Optional[str] = Header(None),
+        ):
+            action = "config.calibration_update"
+            parameters = request.model_dump(exclude_none=True)
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                result = self._update_calibration_config(parameters)
+                self._audit_command(action, "success", parameters=parameters, details=result)
+                return StatusResponse(
+                    status="success",
+                    message="Calibration configuration updated",
+                    data={"calibration": result["after"], "changes": result},
+                )
+            except ValueError as e:
+                error = HTTPException(status_code=400, detail=str(e))
+                self._audit_http_error(action, parameters, error)
+                raise error
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/config/profiles",
+            response_model=StatusResponse,
+            tags=["System"],
+            dependencies=protected_audit,
+        )
+        async def list_config_profiles():
+            profiles = self.config_profiles.list_profiles()
+            return StatusResponse(
+                status="success",
+                message="Configuration profiles retrieved",
+                data={"profiles": profiles},
+            )
+
+        @self.app.post(
+            "/api/config/profiles",
+            response_model=StatusResponse,
+            tags=["System"],
+            dependencies=protected,
+        )
+        async def save_config_profile(
+            request: ConfigProfileSaveRequest,
+            x_control_token: Optional[str] = Header(None),
+        ):
+            action = "config.profile_store"
+            parameters = request.model_dump()
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                profile = self.config_profiles.save_profile(
+                    request.name,
+                    self._current_config_snapshot(),
+                    description=request.description,
+                    overwrite=request.overwrite,
+                )
+                self._audit_command(
+                    action,
+                    "success",
+                    parameters=parameters,
+                    details={
+                        "profile": profile["name"],
+                        "groups": sorted(profile["configuration"].keys()),
+                    },
+                )
+                return StatusResponse(
+                    status="success",
+                    message="Configuration profile stored",
+                    data={"profile": profile},
+                )
+            except FileExistsError as e:
+                error = HTTPException(status_code=409, detail=str(e))
+                self._audit_http_error(action, parameters, error)
+                raise error
+            except ValueError as e:
+                error = HTTPException(status_code=400, detail=str(e))
+                self._audit_http_error(action, parameters, error)
+                raise error
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/config/profiles/{name}",
+            response_model=StatusResponse,
+            tags=["System"],
+            dependencies=protected_audit,
+        )
+        async def get_config_profile(name: str):
+            action = "config.profile_retrieve"
+            parameters = {"name": name}
+            profile = self.config_profiles.get_profile(name)
+            if not profile:
+                error = HTTPException(status_code=404, detail="Configuration profile not found.")
+                self._audit_http_error(action, parameters, error)
+                raise error
+
+            self._audit_command(
+                action,
+                "success",
+                parameters=parameters,
+                details={
+                    "profile": profile["name"],
+                    "groups": sorted(profile["configuration"].keys()),
+                },
+            )
+            return StatusResponse(
+                status="success",
+                message="Configuration profile retrieved",
+                data={"profile": profile},
+            )
+
+        @self.app.post(
+            "/api/config/profiles/{name}/apply",
+            response_model=StatusResponse,
+            tags=["System"],
+            dependencies=protected,
+        )
+        async def apply_config_profile(
+            name: str,
+            request: Optional[ConfigProfileApplyRequest] = None,
+            x_control_token: Optional[str] = Header(None),
+        ):
+            action = "config.profile_apply"
+            apply_request = request or ConfigProfileApplyRequest()
+            parameters = {"name": name, **apply_request.model_dump()}
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                profile = self.config_profiles.get_profile(name)
+                if not profile:
+                    raise HTTPException(status_code=404, detail="Configuration profile not found.")
+
+                result = self._apply_config_snapshot(
+                    profile["configuration"],
+                    apply_to_pixhawk=apply_request.apply_to_pixhawk,
+                )
+                self._audit_command(
+                    action,
+                    "success",
+                    parameters=parameters,
+                    details={
+                        "profile": profile["name"],
+                        "result": result,
+                    },
+                )
+                return StatusResponse(
+                    status="success",
+                    message="Configuration profile applied",
+                    data={"profile": profile["name"], "result": result},
+                )
+            except ValueError as e:
+                error = HTTPException(status_code=400, detail=str(e))
+                self._audit_http_error(action, parameters, error)
+                raise error
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
             "/api/navigation/config",
             response_model=StatusResponse,
             tags=["Navigation"],
@@ -1138,7 +1944,7 @@ class ServerAPI:
             action = "navigation.config_update"
             parameters = request.model_dump(exclude_none=True, mode="json")
             try:
-                self._require_command_authority(x_control_token)
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
                 updated = self.mission_planner.update_navigation_config(
                     obstacle_avoidance=(
                         request.obstacle_avoidance.model_dump(exclude_none=True, mode="json")
@@ -1187,7 +1993,7 @@ class ServerAPI:
         async def apply_navigation_config(x_control_token: Optional[str] = Header(None)):
             action = "navigation.config_apply"
             try:
-                self._require_command_authority(x_control_token)
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
                 navigation_config = self._get_navigation_config()
                 result = self.connection_manager.apply_navigation_config(navigation_config)
                 self._require_success(result.get("success"), "Navigation parameter application failed.")
@@ -1322,6 +2128,7 @@ class ServerAPI:
         async def emergency_land():
             action = "emergency.land"
             try:
+                self._require_command_role()
                 stopped = self.payload_controller.disarm_spray(
                     telemetry_snapshot=self.telemetry_manager.get_current()
                 )
@@ -1350,6 +2157,7 @@ class ServerAPI:
         async def emergency_rtl():
             action = "emergency.rtl"
             try:
+                self._require_command_role()
                 stopped = self.payload_controller.disarm_spray(
                     telemetry_snapshot=self.telemetry_manager.get_current()
                 )
@@ -1378,6 +2186,7 @@ class ServerAPI:
         async def emergency_stop_spray():
             action = "emergency.stop_spray"
             try:
+                self._require_command_role()
                 stopped = self.payload_controller.disarm_spray(
                     telemetry_snapshot=self.telemetry_manager.get_current()
                 )
@@ -1401,6 +2210,7 @@ class ServerAPI:
         async def emergency_hold():
             action = "emergency.hold"
             try:
+                self._require_command_role()
                 stopped = self.payload_controller.disarm_spray(
                     telemetry_snapshot=self.telemetry_manager.get_current()
                 )
@@ -1558,10 +2368,14 @@ class ServerAPI:
         async def pause_mission(x_control_token: Optional[str] = Header(None)):
             action = "mission.pause"
             parameters = {}
-            self._require_command_authority(x_control_token)
-            self.mission_planner.pause_mission()
-            self._audit_command(action, "success", parameters=parameters)
-            return StatusResponse(status="success", message="Mission paused")
+            try:
+                self._require_command_authority(x_control_token)
+                self.mission_planner.pause_mission()
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(status="success", message="Mission paused")
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
 
         @self.app.post(
             "/api/mission/resume",
@@ -1572,10 +2386,14 @@ class ServerAPI:
         async def resume_mission(x_control_token: Optional[str] = Header(None)):
             action = "mission.resume"
             parameters = {}
-            self._require_command_authority(x_control_token)
-            self.mission_planner.resume_mission()
-            self._audit_command(action, "success", parameters=parameters)
-            return StatusResponse(status="success", message="Mission resumed")
+            try:
+                self._require_command_authority(x_control_token)
+                self.mission_planner.resume_mission()
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(status="success", message="Mission resumed")
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
 
         @self.app.post(
             "/api/mission/abort",
@@ -1586,10 +2404,14 @@ class ServerAPI:
         async def abort_mission(x_control_token: Optional[str] = Header(None)):
             action = "mission.abort"
             parameters = {}
-            self._require_command_authority(x_control_token)
-            self.mission_planner.abort_mission()
-            self._audit_command(action, "success", parameters=parameters)
-            return StatusResponse(status="success", message="Mission aborted")
+            try:
+                self._require_command_authority(x_control_token)
+                self.mission_planner.abort_mission()
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(status="success", message="Mission aborted")
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
 
         @self.app.get(
             "/api/mission/stats",
@@ -1640,9 +2462,19 @@ class ServerAPI:
             dependencies=protected,
         )
         async def verify_pixhawk_mission():
-            result = self.connection_manager.verify_mission(self.mission_planner.mission_items)
-            self._require_success(result.get("success"), "Pixhawk mission verification failed.")
-            return StatusResponse(status="success", message="Pixhawk mission verification completed", data=result)
+            action = "mission.pixhawk_verify"
+            try:
+                result = self.connection_manager.verify_mission(self.mission_planner.mission_items)
+                self._require_success(result.get("success"), "Pixhawk mission verification failed.")
+                self._audit_command(action, "success", details=result)
+                return StatusResponse(
+                    status="success",
+                    message="Pixhawk mission verification completed",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, {}, e)
+                raise
 
         @self.app.delete(
             "/api/mission/pixhawk",
@@ -1757,6 +2589,7 @@ class ServerAPI:
             if request.action == PayloadAction.SPRAY_STOP:
                 action = "payload.spray_stop"
                 try:
+                    self._require_command_role()
                     self._require_success(
                         self.payload_controller.disarm_spray(
                             telemetry_snapshot=self.telemetry_manager.get_current(),
@@ -2348,14 +3181,8 @@ class ServerAPI:
 
         @self.app.websocket("/ws/telemetry")
         async def websocket_telemetry(websocket: WebSocket):
-            if config.api.auth_enabled:
-                supplied_key = websocket.headers.get("x-api-key") or websocket.query_params.get("api_key")
-                if not config.api.api_key:
-                    await websocket.close(code=1011, reason="API_KEY is not configured.")
-                    return
-                if not supplied_key or not hmac.compare_digest(supplied_key, config.api.api_key):
-                    await websocket.close(code=1008, reason="Invalid or missing API key.")
-                    return
+            if not await self._authorize_websocket(websocket):
+                return
 
             await websocket.accept()
             client_id = id(websocket)
@@ -2384,6 +3211,43 @@ class ServerAPI:
             finally:
                 self.active_websocket_clients.discard(websocket)
                 self.telemetry_manager.unsubscribe(str(client_id))
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+
+        @self.app.websocket("/ws/events")
+        async def websocket_events(websocket: WebSocket):
+            if not await self._authorize_websocket(websocket):
+                return
+
+            await websocket.accept()
+            client_id = str(id(websocket))
+            loop = asyncio.get_running_loop()
+            self.active_event_websocket_clients.add(websocket)
+
+            try:
+                self._subscribe_command_events(
+                    client_id,
+                    lambda event: asyncio.run_coroutine_threadsafe(
+                        self._send_ws(websocket, event),
+                        loop,
+                    ),
+                )
+
+                while True:
+                    try:
+                        await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                    except asyncio.TimeoutError:
+                        continue
+                    except WebSocketDisconnect:
+                        break
+
+            except Exception as e:
+                logger.error(f"Command event WebSocket error: {str(e)}")
+            finally:
+                self.active_event_websocket_clients.discard(websocket)
+                self._unsubscribe_command_events(client_id)
                 try:
                     await websocket.close()
                 except Exception:

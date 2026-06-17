@@ -122,9 +122,17 @@ POST /api/v1/navigation/apply         - Apply saved navigation config to Pixhawk
 
 When terrain following is enabled, new mission waypoints default to the
 `terrain` altitude frame unless a waypoint explicitly sets `altitude_frame` to
-`relative`. Obstacle avoidance uses ArduPilot's configured proximity or
-rangefinder sensors; the companion config applies the relevant Pixhawk
-parameters but does not replace ArduPilot's flight-critical avoidance logic.
+`relative`.
+
+Pixhawk rangefinders are read live from MAVLink `DISTANCE_SENSOR` messages, not
+from Raspberry Pi GPIO pins. The current sensor mapping is:
+
+- `RNGFND1` / `DISTANCE_SENSOR id=0`: terrain following
+- `RNGFND2` / `DISTANCE_SENSOR id=1`: obstacle avoidance
+
+Obstacle avoidance still uses ArduPilot's configured proximity or rangefinder
+sensors; the companion app reads and reports the live Pixhawk data, but it does
+not replace ArduPilot's flight-critical avoidance logic.
 
 ### Payload Control
 ```

@@ -1218,6 +1218,7 @@ class PayloadController:
     """Master payload controller"""
 
     def __init__(self, config):
+        self.config = config
         self.spray_pump = SprayPump(config.spray_pump_pin)
         self.flow_sensor = None
         self.pressure_sensor = None
@@ -1311,6 +1312,95 @@ class PayloadController:
             if config.camera_enabled
             else None
         )
+
+    def get_calibration_config(self) -> Dict:
+        """Return runtime calibration values for payload sensors."""
+        return {
+            "flow_sensor": {
+                "pulses_per_liter": self.config.flow_sensor_pulses_per_liter,
+                "live_pulses_per_liter": (
+                    self.flow_sensor.pulses_per_liter if self.flow_sensor else None
+                ),
+            },
+            "pressure_sensor": {
+                "min_voltage": self.config.pressure_sensor_min_voltage,
+                "max_voltage": self.config.pressure_sensor_max_voltage,
+                "min_psi": self.config.pressure_sensor_min_psi,
+                "max_psi": self.config.pressure_sensor_max_psi,
+                "live_available": bool(self.pressure_sensor),
+            },
+            "tank_level_sensor": {
+                "min_voltage": self.config.tank_level_sensor_min_voltage,
+                "max_voltage": self.config.tank_level_sensor_max_voltage,
+                "capacity_liters": self.tank_capacity_liters,
+                "minimum_level_percent": self.tank_min_level_percent,
+                "live_available": bool(self.tank_level_sensor),
+            },
+            "terrain_sensor": {
+                "min_agl_meters": self.config.terrain_min_agl_meters,
+                "max_agl_meters": self.config.terrain_max_agl_meters,
+            },
+        }
+
+    def update_calibration_config(self, calibration: Dict) -> Dict:
+        """Update runtime payload calibration values and active sensor objects."""
+        before = self.get_calibration_config()
+
+        flow_sensor = calibration.get("flow_sensor") or {}
+        if "pulses_per_liter" in flow_sensor:
+            pulses_per_liter = float(flow_sensor["pulses_per_liter"])
+            self.config.flow_sensor_pulses_per_liter = pulses_per_liter
+            if self.flow_sensor:
+                with self.flow_sensor._lock:
+                    self.flow_sensor.pulses_per_liter = pulses_per_liter
+
+        pressure_sensor = calibration.get("pressure_sensor") or {}
+        if "min_voltage" in pressure_sensor:
+            self.config.pressure_sensor_min_voltage = float(pressure_sensor["min_voltage"])
+            if self.pressure_sensor:
+                self.pressure_sensor.min_voltage = self.config.pressure_sensor_min_voltage
+        if "max_voltage" in pressure_sensor:
+            self.config.pressure_sensor_max_voltage = float(pressure_sensor["max_voltage"])
+            if self.pressure_sensor:
+                self.pressure_sensor.max_voltage = self.config.pressure_sensor_max_voltage
+        if "min_psi" in pressure_sensor:
+            self.config.pressure_sensor_min_psi = float(pressure_sensor["min_psi"])
+            if self.pressure_sensor:
+                self.pressure_sensor.min_value = self.config.pressure_sensor_min_psi
+        if "max_psi" in pressure_sensor:
+            self.config.pressure_sensor_max_psi = float(pressure_sensor["max_psi"])
+            if self.pressure_sensor:
+                self.pressure_sensor.max_value = self.config.pressure_sensor_max_psi
+
+        tank_level_sensor = calibration.get("tank_level_sensor") or {}
+        if "min_voltage" in tank_level_sensor:
+            self.config.tank_level_sensor_min_voltage = float(tank_level_sensor["min_voltage"])
+            if self.tank_level_sensor:
+                self.tank_level_sensor.min_voltage = self.config.tank_level_sensor_min_voltage
+        if "max_voltage" in tank_level_sensor:
+            self.config.tank_level_sensor_max_voltage = float(tank_level_sensor["max_voltage"])
+            if self.tank_level_sensor:
+                self.tank_level_sensor.max_voltage = self.config.tank_level_sensor_max_voltage
+        if "capacity_liters" in tank_level_sensor:
+            self.tank_capacity_liters = float(tank_level_sensor["capacity_liters"])
+            self.config.tank_capacity_liters = self.tank_capacity_liters
+        if "minimum_level_percent" in tank_level_sensor:
+            self.tank_min_level_percent = float(tank_level_sensor["minimum_level_percent"])
+            self.config.tank_min_level_percent = self.tank_min_level_percent
+
+        terrain_sensor = calibration.get("terrain_sensor") or {}
+        if "min_agl_meters" in terrain_sensor:
+            self.config.terrain_min_agl_meters = float(terrain_sensor["min_agl_meters"])
+        if "max_agl_meters" in terrain_sensor:
+            self.config.terrain_max_agl_meters = float(terrain_sensor["max_agl_meters"])
+
+        after = self.get_calibration_config()
+        return {
+            "before": before,
+            "after": after,
+            "applied": calibration,
+            "persistent": False,
+        }
 
     def arm_spray(
         self,
