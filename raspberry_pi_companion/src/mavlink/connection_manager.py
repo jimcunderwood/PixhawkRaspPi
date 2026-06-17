@@ -39,14 +39,34 @@ class ConnectionManager:
         self.config = config
         self.vehicle: Optional[Vehicle] = None
         self.connected = False
+        self._connection_state = "offline"
+        self._connection_state_changed_at = time.time()
+        self._connection_last_error = None
         self._connection_thread = None
+        self._monitor_stop_event = threading.Event()
+        self._monitor_active = False
+        self._reconnect_backoff_seconds = 1.0
+        self._max_reconnect_backoff_seconds = 30.0
         self._callbacks = {}
         self._lock = threading.Lock()
         self._prearm_messages = deque(maxlen=20)
         self._last_status_text = None
         self._distance_sensors = {}
+        self._navigation_config_snapshot = {}
+        self._obstacle_avoidance_sensor_config = {}
+        self._obstacle_gpio = None
+        self._obstacle_gpio_pin = None
+        self._obstacle_gpio_active_low = True
+        self._obstacle_gpio_available = False
+        self._obstacle_gpio_last_update = None
+        self._obstacle_ros_node = None
+        self._obstacle_ros_thread = None
+        self._obstacle_ros_available = False
+        self._obstacle_ros_last_update = None
+        self._obstacle_ros_last_value = None
+        self._obstacle_ros_subscription = None
 
-    def connect(self) -> bool:
+    def connect(self, start_monitor: bool = True) -> bool:
         """
         Establish connection to Pixhawk
         
@@ -54,6 +74,7 @@ class ConnectionManager:
             bool: True if connection successful
         """
         try:
+            self._set_connection_state("connecting")
             logger.info(f"Connecting to Pixhawk via {self.config.connection_type.value}...")
             
             connection_string = self._build_connection_string()
@@ -101,20 +122,37 @@ class ConnectionManager:
             self._register_distance_sensor_listener()
             logger.info("Successfully connected to Pixhawk")
             self.connected = True
+            self._connection_last_error = None
+            self._set_connection_state("connected")
+            self._reconnect_backoff_seconds = 1.0
             self._trigger_callback('connected')
             
             # Start monitoring thread
-            self._start_monitor_thread()
+            if start_monitor:
+                self._start_monitor_thread()
             
             return True
             
         except Exception as e:
             logger.error(f"Failed to connect to Pixhawk: {str(e)}")
             self.connected = False
+            self._connection_last_error = str(e)
+            if start_monitor and self._monitor_active:
+                self._set_connection_state("reconnecting")
+            else:
+                self._set_connection_state("offline")
             return False
 
     def disconnect(self):
         """Disconnect from Pixhawk"""
+        self._monitor_stop_event.set()
+        self._monitor_active = False
+        self._disconnect_vehicle(cleanup_obstacle=True)
+        self._set_connection_state("offline")
+        logger.info("Disconnected from Pixhawk")
+
+    def _disconnect_vehicle(self, cleanup_obstacle: bool = False):
+        """Close the current vehicle connection without affecting monitor state."""
         if self.vehicle:
             try:
                 self.vehicle.remove_message_listener('STATUSTEXT', self._handle_status_text)
@@ -124,10 +162,36 @@ class ConnectionManager:
                 self.vehicle.remove_message_listener('DISTANCE_SENSOR', self._handle_distance_sensor)
             except Exception:
                 pass
-            self.vehicle.close()
+            if cleanup_obstacle:
+                self._cleanup_obstacle_gpio()
+                self._cleanup_obstacle_ros_bridge()
+            try:
+                self.vehicle.close()
+            except Exception:
+                pass
             self.vehicle = None
         self.connected = False
-        logger.info("Disconnected from Pixhawk")
+
+    def _set_connection_state(self, state: str, error: Optional[str] = None):
+        self._connection_state = state
+        self._connection_state_changed_at = time.time()
+        if error is not None:
+            self._connection_last_error = error
+
+    def get_connection_status(self) -> dict:
+        """Return the current Pixhawk link state for API clients."""
+        return {
+            "state": self._connection_state,
+            "connected": bool(self.connected),
+            "monitoring": bool(self._monitor_active and not self._monitor_stop_event.is_set()),
+            "reconnecting": self._connection_state == "reconnecting",
+            "retry_backoff_seconds": self._reconnect_backoff_seconds
+            if self._connection_state == "reconnecting"
+            else 0.0,
+            "max_retry_backoff_seconds": self._max_reconnect_backoff_seconds,
+            "last_changed_at": self._connection_state_changed_at,
+            "last_error": self._connection_last_error,
+        }
 
     def _build_connection_string(self) -> str:
         """Build DroneKit connection string based on config"""
@@ -241,6 +305,11 @@ class ConnectionManager:
 
     def _start_monitor_thread(self):
         """Start background thread to monitor connection health"""
+        if self._connection_thread and self._connection_thread.is_alive():
+            return
+
+        self._monitor_stop_event.clear()
+        self._monitor_active = True
         self._connection_thread = threading.Thread(
             target=self._monitor_connection,
             daemon=True
@@ -249,17 +318,61 @@ class ConnectionManager:
 
     def _monitor_connection(self):
         """Monitor connection and detect disconnections"""
-        while self.connected:
+        while self._monitor_active and not self._monitor_stop_event.is_set():
             try:
-                if self.vehicle and not self.vehicle.is_armable:
-                    # Basic health check
-                    pass
-                time.sleep(5)
+                if self._vehicle_connection_healthy():
+                    self._reconnect_backoff_seconds = 1.0
+                    if self.connected:
+                        self._set_connection_state("connected")
+                    time.sleep(1)
+                    continue
+
+                if self.vehicle or self.connected:
+                    logger.warning("Pixhawk connection lost; closing connection and scheduling reconnect.")
+                    self._disconnect_vehicle(cleanup_obstacle=False)
+                    self._trigger_callback('disconnected')
+                    self._set_connection_state("reconnecting")
+
+                if self._monitor_stop_event.wait(self._reconnect_backoff_seconds):
+                    break
+
+                self._set_connection_state("reconnecting")
+                if self.connect(start_monitor=False):
+                    logger.info("Reconnected to Pixhawk")
+                    self._reconnect_backoff_seconds = 1.0
+                    self._set_connection_state("connected")
+                    continue
+
+                self._reconnect_backoff_seconds = min(
+                    self._reconnect_backoff_seconds * 2,
+                    self._max_reconnect_backoff_seconds,
+                )
+                self._set_connection_state("reconnecting")
             except Exception as e:
                 logger.warning(f"Connection health check failed: {str(e)}")
-                self.connected = False
+                self._disconnect_vehicle(cleanup_obstacle=False)
                 self._trigger_callback('disconnected')
-                break
+                self._set_connection_state("reconnecting", error=str(e))
+                if self._monitor_stop_event.wait(self._reconnect_backoff_seconds):
+                    break
+                self._reconnect_backoff_seconds = min(
+                    self._reconnect_backoff_seconds * 2,
+                    self._max_reconnect_backoff_seconds,
+                )
+
+    def _vehicle_connection_healthy(self) -> bool:
+        if not self.vehicle:
+            return False
+
+        try:
+            heartbeat_age = getattr(self.vehicle, "last_heartbeat", None)
+            if heartbeat_age is None:
+                return True
+
+            heartbeat_timeout = max(5.0, min(float(self.config.timeout), 10.0))
+            return float(heartbeat_age) <= heartbeat_timeout
+        except Exception:
+            return False
 
     # Vehicle Control Methods
 
@@ -470,6 +583,13 @@ class ConnectionManager:
 
     def apply_navigation_config(self, navigation_config) -> dict:
         """Apply companion obstacle avoidance and terrain-following settings to Pixhawk parameters."""
+        config_data = (
+            navigation_config.to_dict()
+            if hasattr(navigation_config, "to_dict")
+            else navigation_config
+        )
+        self._navigation_config_snapshot = dict(config_data or {})
+        self._configure_obstacle_avoidance_runtime((config_data or {}).get("obstacle_avoidance", {}))
         if not self.vehicle:
             return {
                 "success": False,
@@ -477,12 +597,6 @@ class ConnectionManager:
                 "applied": [],
                 "failed": [],
             }
-
-        config_data = (
-            navigation_config.to_dict()
-            if hasattr(navigation_config, "to_dict")
-            else navigation_config
-        )
         updates = self._navigation_parameter_updates(config_data or {})
         applied = []
         failed = []
@@ -524,6 +638,7 @@ class ConnectionManager:
                     ]
                 ),
                 "proximity": self._proximity_status(),
+                "sensor": self._obstacle_avoidance_status(),
             },
             "terrain_following": {
                 "parameters": self._parameter_snapshot(
@@ -536,6 +651,7 @@ class ConnectionManager:
                     ]
                 ),
                 "terrain": self._terrain_status(),
+                "hooks": self._terrain_hooks_status(),
             },
             "distance_sensors": self._distance_sensor_snapshot(),
         }
@@ -642,19 +758,9 @@ class ConnectionManager:
                 return None
 
     def _proximity_status(self) -> dict:
-        sensor = self._selected_distance_sensor(role="obstacle_avoidance")
+        sensor = self._obstacle_mavlink_status()
         if sensor:
-            return {
-                "available": True,
-                "source": "mavlink.distance_sensor",
-                "sensor_id": sensor.get("sensor_id"),
-                "orientation": sensor.get("orientation"),
-                "distance_meters": sensor.get("current_distance_meters"),
-                "min_distance_meters": sensor.get("min_distance_meters"),
-                "max_distance_meters": sensor.get("max_distance_meters"),
-                "signal_quality": sensor.get("signal_quality"),
-                "updated_at": sensor.get("timestamp"),
-            }
+            return sensor
 
         proximity = getattr(self.vehicle, "proximity", None) if self.vehicle else None
         if proximity:
@@ -948,6 +1054,16 @@ class ConnectionManager:
 
         return terrain
 
+    def _terrain_hooks_status(self) -> dict:
+        terrain_config = dict(self._navigation_config_snapshot.get("terrain_following", {}))
+        return {
+            "ros_bridge_enabled": bool(terrain_config.get("ros_bridge_enabled", False)),
+            "ros_backend": terrain_config.get("ros_backend", "mavros"),
+            "ros_topic": terrain_config.get("ros_topic"),
+            "mavros_topic": terrain_config.get("mavros_topic"),
+            "ros_frame_id": terrain_config.get("ros_frame_id"),
+        }
+
     def _distance_sensor_snapshot(self) -> list:
         with self._lock:
             sensors = list(self._distance_sensors.values())
@@ -968,6 +1084,25 @@ class ConnectionManager:
         ]
 
     def _selected_distance_sensor(self, role: str) -> Optional[dict]:
+        preferred_sensor_id = self._preferred_sensor_id(role)
+        return self._selected_distance_sensor_by_id(preferred_sensor_id)
+
+    def _preferred_sensor_id(self, role: str) -> Optional[int]:
+        if role == "terrain_following":
+            return 0
+
+        if role == "obstacle_avoidance":
+            sensor_config = self._obstacle_avoidance_sensor_config or {}
+            sensor_id = sensor_config.get("mavlink_sensor_id")
+            if sensor_id is not None:
+                try:
+                    return int(sensor_id)
+                except (TypeError, ValueError):
+                    return None
+
+        return None
+
+    def _selected_distance_sensor_by_id(self, preferred_sensor_id: Optional[int]) -> Optional[dict]:
         with self._lock:
             sensors = list(self._distance_sensors.values())
 
@@ -978,31 +1113,24 @@ class ConnectionManager:
         if not sensors:
             return None
 
-        preferred_orientation = self._sensor_orientation_for_role(role)
+        if preferred_sensor_id is not None:
+            matched = [sensor for sensor in sensors if sensor.get("sensor_id") == preferred_sensor_id]
+            if matched:
+                return max(matched, key=lambda sensor: sensor.get("timestamp") or 0.0)
+
+        preferred_orientation = None
+        if preferred_sensor_id is None:
+            preferred_orientation = self._sensor_orientation_for_role("terrain_following")
         if preferred_orientation is not None:
             oriented = [sensor for sensor in sensors if sensor.get("orientation") == preferred_orientation]
             if oriented:
                 return max(oriented, key=lambda sensor: sensor.get("timestamp") or 0.0)
-
-        preferred_sensor_id = self._sensor_id_for_role(role)
-        if preferred_sensor_id is not None:
-            preferred = [sensor for sensor in sensors if sensor.get("sensor_id") == preferred_sensor_id]
-            if preferred:
-                return max(preferred, key=lambda sensor: sensor.get("timestamp") or 0.0)
-
-        # Fall back to deterministic ordering when the Pixhawk doesn't expose
-        # a usable orientation value or the expected sensor IDs are missing.
-        if role == "terrain_following":
-            return self._pick_sensor_by_id(sensors, prefer_lowest=True)
-        if role == "obstacle_avoidance":
-            return self._pick_sensor_by_id(sensors, prefer_lowest=False)
 
         return max(sensors, key=lambda sensor: sensor.get("timestamp") or 0.0)
 
     def _sensor_orientation_for_role(self, role: str) -> Optional[int]:
         parameter_name = {
             "terrain_following": "RNGFND1_ORIENT",
-            "obstacle_avoidance": "RNGFND2_ORIENT",
         }.get(role)
         if not parameter_name:
             return None
@@ -1016,40 +1144,288 @@ class ConnectionManager:
         except (TypeError, ValueError):
             return None
 
-    def _sensor_id_for_role(self, role: str) -> Optional[int]:
-        return {
-            "terrain_following": 0,
-            "obstacle_avoidance": 1,
-        }.get(role)
+    def _configure_obstacle_avoidance_runtime(self, obstacle_config: dict):
+        config_snapshot = dict(obstacle_config or {})
+        self._obstacle_avoidance_sensor_config = config_snapshot
+        source = str(config_snapshot.get("source", "mavlink")).strip().lower()
+        if source == "gpio":
+            self._initialize_obstacle_gpio(config_snapshot)
+        else:
+            self._cleanup_obstacle_gpio()
+        if source == "ros" or bool(config_snapshot.get("ros_enabled", False)):
+            self._initialize_obstacle_ros_bridge(config_snapshot)
+        else:
+            self._cleanup_obstacle_ros_bridge()
 
-    def _pick_sensor_by_id(self, sensors: list, prefer_lowest: bool = True) -> Optional[dict]:
-        if not sensors:
+    def _initialize_obstacle_gpio(self, obstacle_config: dict):
+        gpio_pin = obstacle_config.get("gpio_pin")
+        if gpio_pin is None:
+            self._cleanup_obstacle_gpio()
+            return
+
+        try:
+            gpio_pin = int(gpio_pin)
+        except (TypeError, ValueError):
+            self._cleanup_obstacle_gpio()
+            return
+
+        if self._obstacle_gpio and self._obstacle_gpio_pin == gpio_pin:
+            self._obstacle_gpio_active_low = bool(obstacle_config.get("gpio_active_low", True))
+            self._obstacle_gpio_available = True
+            return
+
+        self._cleanup_obstacle_gpio()
+        try:
+            import RPi.GPIO as GPIO
+            self._obstacle_gpio = GPIO
+            self._obstacle_gpio.setmode(GPIO.BCM)
+            self._obstacle_gpio.setup(gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            self._obstacle_gpio_pin = gpio_pin
+            self._obstacle_gpio_active_low = bool(obstacle_config.get("gpio_active_low", True))
+            self._obstacle_gpio_available = True
+            logger.info("Obstacle avoidance GPIO sensor initialized on pin %s", gpio_pin)
+        except ImportError:
+            logger.warning("RPi.GPIO not available - obstacle avoidance GPIO sensor disabled")
+            self._cleanup_obstacle_gpio()
+        except Exception as e:
+            logger.error(f"Failed to initialize obstacle avoidance GPIO pin {gpio_pin}: {str(e)}")
+            self._cleanup_obstacle_gpio()
+
+    def _cleanup_obstacle_gpio(self):
+        try:
+            if self._obstacle_gpio and self._obstacle_gpio_pin is not None:
+                self._obstacle_gpio.cleanup(self._obstacle_gpio_pin)
+        except Exception:
+            pass
+        self._obstacle_gpio = None
+        self._obstacle_gpio_pin = None
+        self._obstacle_gpio_available = False
+        self._obstacle_gpio_last_update = None
+
+    def _initialize_obstacle_ros_bridge(self, obstacle_config: dict):
+        ros_enabled = bool(obstacle_config.get("ros_enabled", False))
+        ros_topic = str(obstacle_config.get("ros_topic", "")).strip()
+        ros_message_type = str(obstacle_config.get("ros_message_type", "std_msgs/Float32")).strip()
+        if not ros_enabled or not ros_topic or not ros_message_type:
+            self._cleanup_obstacle_ros_bridge()
+            return
+
+        if self._obstacle_ros_node and self._obstacle_ros_available:
+            return
+
+        self._cleanup_obstacle_ros_bridge()
+        try:
+            import importlib
+
+            rclpy = importlib.import_module("rclpy")
+            node_module = importlib.import_module("rclpy.node")
+            message_class = self._load_ros_message_type(ros_message_type)
+            if message_class is None:
+                logger.warning("Unsupported ROS obstacle message type: %s", ros_message_type)
+                return
+
+            rclpy.init(args=None)
+
+            parent = self
+
+            class _ObstacleAvoidanceRosNode(node_module.Node):
+                def __init__(self):
+                    super().__init__("drone_companion_obstacle_avoidance")
+                    self.create_subscription(message_class, ros_topic, self._callback, 10)
+
+                def _callback(self, message):
+                    parent._obstacle_ros_last_update = time.time()
+                    parent._obstacle_ros_last_value = parent._extract_ros_distance_value(message)
+
+            self._obstacle_ros_node = _ObstacleAvoidanceRosNode()
+            self._obstacle_ros_available = True
+
+            def _spin():
+                try:
+                    rclpy.spin(self._obstacle_ros_node)
+                except Exception as e:
+                    logger.warning("ROS obstacle avoidance bridge stopped: %s", str(e))
+                finally:
+                    try:
+                        if self._obstacle_ros_node:
+                            self._obstacle_ros_node.destroy_node()
+                    except Exception:
+                        pass
+                    try:
+                        if rclpy.ok():
+                            rclpy.shutdown()
+                    except Exception:
+                        pass
+                    self._obstacle_ros_available = False
+
+            self._obstacle_ros_thread = threading.Thread(target=_spin, daemon=True)
+            self._obstacle_ros_thread.start()
+            logger.info("Obstacle avoidance ROS bridge initialized on topic %s", ros_topic)
+        except Exception as e:
+            logger.warning("ROS obstacle avoidance bridge unavailable: %s", str(e))
+            self._cleanup_obstacle_ros_bridge()
+
+    def _cleanup_obstacle_ros_bridge(self):
+        rclpy = None
+        try:
+            try:
+                import importlib
+                rclpy = importlib.import_module("rclpy")
+            except Exception:
+                rclpy = None
+            if self._obstacle_ros_node is not None:
+                try:
+                    self._obstacle_ros_node.destroy_node()
+                except Exception:
+                    pass
+            if rclpy is not None:
+                try:
+                    if rclpy.ok():
+                        rclpy.shutdown()
+                except Exception:
+                    pass
+        finally:
+            thread = self._obstacle_ros_thread
+            self._obstacle_ros_node = None
+            self._obstacle_ros_thread = None
+            self._obstacle_ros_available = False
+            self._obstacle_ros_last_update = None
+            self._obstacle_ros_last_value = None
+            self._obstacle_ros_subscription = None
+            if thread and thread.is_alive():
+                try:
+                    thread.join(timeout=2)
+                except Exception:
+                    pass
+
+    def _load_ros_message_type(self, ros_message_type: str):
+        try:
+            package, message = ros_message_type.split("/", 1)
+            module = __import__(f"{package}.msg", fromlist=[message])
+            return getattr(module, message, None)
+        except Exception:
             return None
 
-        if not prefer_lowest:
-            def rank(sensor: dict):
-                sensor_id = sensor.get("sensor_id")
-                timestamp = sensor.get("timestamp") or 0.0
-                if sensor_id is None:
-                    return (-1, timestamp)
+    def _extract_ros_distance_value(self, message) -> Optional[float]:
+        for field in ("distance", "range", "data", "current_distance", "current_distance_meters"):
+            value = getattr(message, field, None)
+            if value is not None:
                 try:
-                    return (int(sensor_id), timestamp)
+                    numeric = float(value)
                 except (TypeError, ValueError):
-                    return (-1, timestamp)
+                    continue
+                if field == "current_distance" and numeric > 100.0:
+                    return numeric / 100.0
+                return numeric
+        return None
 
-            return max(sensors, key=rank)
+    def _obstacle_mavlink_status(self) -> Optional[dict]:
+        sensor_config = self._obstacle_avoidance_sensor_config or {}
+        source = str(sensor_config.get("source", "mavlink")).strip().lower()
+        if source != "mavlink":
+            return None
 
-        def rank(sensor: dict):
-            sensor_id = sensor.get("sensor_id")
-            timestamp = sensor.get("timestamp") or 0.0
-            if sensor_id is None:
-                return (float("inf"), timestamp)
-            try:
-                return (int(sensor_id), timestamp)
-            except (TypeError, ValueError):
-                return (float("inf"), timestamp)
+        sensor = self._selected_distance_sensor("obstacle_avoidance")
+        if not sensor:
+            return {
+                "available": False,
+                "source": "mavlink.distance_sensor",
+                "sensor_id": sensor_config.get("mavlink_sensor_id"),
+                "coverage_mode": sensor_config.get("coverage_mode", "forward"),
+            }
 
-        return min(sensors, key=rank)
+        return {
+            "available": True,
+            "source": "mavlink.distance_sensor",
+            "sensor_id": sensor.get("sensor_id"),
+            "coverage_mode": sensor_config.get("coverage_mode", "forward"),
+            "orientation": sensor.get("orientation"),
+            "distance_meters": sensor.get("current_distance_meters"),
+            "min_distance_meters": sensor.get("min_distance_meters"),
+            "max_distance_meters": sensor.get("max_distance_meters"),
+            "signal_quality": sensor.get("signal_quality"),
+            "updated_at": sensor.get("timestamp"),
+            "mavlink_sensor_id": sensor_config.get("mavlink_sensor_id"),
+        }
+
+    def _obstacle_gpio_status(self) -> dict:
+        if not self._obstacle_gpio or self._obstacle_gpio_pin is None or not self._obstacle_gpio_available:
+            return {
+                "available": False,
+                "source": "gpio",
+                "gpio_pin": self._obstacle_gpio_pin,
+            }
+
+        try:
+            raw = self._obstacle_gpio.input(self._obstacle_gpio_pin)
+            obstacle_detected = bool(raw == self._obstacle_gpio.LOW) if self._obstacle_gpio_active_low else bool(raw == self._obstacle_gpio.HIGH)
+            self._obstacle_gpio_last_update = time.time()
+            return {
+                "available": True,
+                "source": "gpio",
+                "gpio_pin": self._obstacle_gpio_pin,
+                "active_low": self._obstacle_gpio_active_low,
+                "raw_value": raw,
+                "obstacle_detected": obstacle_detected,
+                "distance_meters": None,
+                "updated_at": self._obstacle_gpio_last_update,
+            }
+        except Exception as e:
+            logger.error(f"Failed to read obstacle avoidance GPIO sensor: {str(e)}")
+            return {
+                "available": False,
+                "source": "gpio",
+                "gpio_pin": self._obstacle_gpio_pin,
+                "error": str(e),
+            }
+
+    def _obstacle_ros_status(self) -> dict:
+        sensor_config = self._obstacle_avoidance_sensor_config or {}
+        ros_enabled = bool(sensor_config.get("ros_enabled", False))
+        return {
+            "available": bool(self._obstacle_ros_available or self._obstacle_ros_last_update),
+            "source": "ros",
+            "backend": sensor_config.get("ros_backend", "mavros"),
+            "topic": sensor_config.get("ros_topic"),
+            "frame_id": sensor_config.get("ros_frame_id"),
+            "message_type": sensor_config.get("ros_message_type"),
+            "ros_enabled": ros_enabled,
+            "last_update": self._obstacle_ros_last_update,
+            "distance_meters": self._obstacle_ros_last_value,
+        }
+
+    def _obstacle_avoidance_status(self) -> dict:
+        sensor_config = self._obstacle_avoidance_sensor_config or {}
+        source = str(sensor_config.get("source", "mavlink")).strip().lower()
+        coverage_mode = str(sensor_config.get("coverage_mode", "forward")).strip().lower()
+
+        if source == "gpio":
+            status = self._obstacle_gpio_status()
+        elif source == "ros":
+            status = self._obstacle_ros_status()
+        else:
+            status = self._obstacle_mavlink_status() or {
+                "available": False,
+                "source": "mavlink.distance_sensor",
+            }
+
+        status.update(
+            {
+                "source_config": {
+                    "source": source,
+                    "coverage_mode": coverage_mode,
+                    "mavlink_sensor_id": sensor_config.get("mavlink_sensor_id"),
+                    "gpio_pin": sensor_config.get("gpio_pin"),
+                    "gpio_active_low": sensor_config.get("gpio_active_low", True),
+                    "ros_enabled": bool(sensor_config.get("ros_enabled", False)),
+                    "ros_backend": sensor_config.get("ros_backend", "mavros"),
+                    "ros_topic": sensor_config.get("ros_topic"),
+                    "ros_frame_id": sensor_config.get("ros_frame_id"),
+                    "ros_message_type": sensor_config.get("ros_message_type"),
+                }
+            }
+        )
+        return status
 
     def get_prearm_status(self) -> dict:
         """Get current pre-arm readiness and recent pre-arm failure messages."""

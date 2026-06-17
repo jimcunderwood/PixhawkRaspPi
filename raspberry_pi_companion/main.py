@@ -4,8 +4,6 @@ Initializes and runs the Raspberry Pi companion software
 """
 
 import logging
-import sys
-import signal
 from typing import Optional
 import uvicorn
 
@@ -42,6 +40,18 @@ def _startup_navigation_config() -> NavigationConfig:
                 "behavior": config.mission.obstacle_avoidance_behavior,
                 "bendy_ruler_type": config.mission.obstacle_avoidance_bendy_ruler_type,
                 "obstacle_database_size": config.mission.obstacle_database_size,
+                "sensor": {
+                    "source": config.mission.obstacle_avoidance_sensor_source,
+                    "coverage_mode": config.mission.obstacle_avoidance_sensor_coverage_mode,
+                    "mavlink_sensor_id": config.mission.obstacle_avoidance_sensor_mavlink_id,
+                    "gpio_pin": config.mission.obstacle_avoidance_sensor_gpio_pin,
+                    "gpio_active_low": config.mission.obstacle_avoidance_sensor_gpio_active_low,
+                    "ros_enabled": config.mission.obstacle_avoidance_sensor_ros_enabled,
+                    "ros_backend": config.mission.obstacle_avoidance_sensor_ros_backend,
+                    "ros_topic": config.mission.obstacle_avoidance_sensor_ros_topic,
+                    "ros_frame_id": config.mission.obstacle_avoidance_sensor_ros_frame_id,
+                    "ros_message_type": config.mission.obstacle_avoidance_sensor_ros_message_type,
+                },
             },
             "terrain_following": {
                 "enabled": config.payload.terrain_following_enabled,
@@ -52,6 +62,11 @@ def _startup_navigation_config() -> NavigationConfig:
                 "use_rangefinder_for_waypoints": config.mission.terrain_use_rangefinder_for_waypoints,
                 "rtl_terrain_enabled": config.mission.terrain_rtl_enabled,
                 "terrain_spacing_meters": config.mission.terrain_spacing_meters,
+                "ros_bridge_enabled": config.mission.terrain_ros_bridge_enabled,
+                "ros_backend": config.mission.terrain_ros_backend,
+                "ros_topic": config.mission.terrain_ros_topic,
+                "mavros_topic": config.mission.terrain_mavros_topic,
+                "ros_frame_id": config.mission.terrain_ros_frame_id,
             },
         }
     )
@@ -88,6 +103,7 @@ class CompanionComputer:
                 config.mission.storage_file,
                 navigation_config=_startup_navigation_config(),
             )
+            self.connection_manager.apply_navigation_config(_startup_navigation_config())
 
             # Initialize payload controller
             logger.info("Initializing payload controller...")
@@ -142,18 +158,12 @@ class CompanionComputer:
         if not self.initialize():
             logger.error("Failed to initialize companion computer")
             return
-
-        # Setup signal handlers
-        def signal_handler(sig, frame):
-            logger.info("Shutdown signal received")
+        try:
+            # Start API server. Uvicorn handles SIGINT/SIGTERM and returns
+            # once shutdown has completed, allowing us to clean up gracefully.
+            self.run_api_server(config.api.host, config.api.port)
+        finally:
             self.cleanup()
-            sys.exit(0)
-
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-
-        # Start API server
-        self.run_api_server(config.api.host, config.api.port)
 
     def cleanup(self):
         """Cleanup all resources"""

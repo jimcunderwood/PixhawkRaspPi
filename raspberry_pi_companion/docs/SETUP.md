@@ -110,6 +110,9 @@ Edit key settings:
 - `API_PORT=8000`
 - `API_KEY=replace-with-a-long-random-token`
 - `API_KEY_ROLES=viewer:viewer-token,operator:operator-token,maintenance:maintenance-token,admin:admin-token`
+- `AUDIT_LOG_FILE=/var/lib/drone-companion/audit/events.jsonl`
+- `AUDIT_LOG_MAX_BYTES=5242880` if you want smaller audit chunks on the Pi
+- `AUDIT_LOG_BACKUP_COUNT=5` to keep a handful of rotated logs
 - `IDEMPOTENCY_TTL_SECONDS=300`
 - `CONFIG_DATABASE_FILE=/var/lib/drone-companion/config/profiles.sqlite3`
 - Hardware pins match your wiring

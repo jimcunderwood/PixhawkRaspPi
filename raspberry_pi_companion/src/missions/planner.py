@@ -36,10 +36,79 @@ class ObstacleAvoidanceMode(Enum):
     BENDY_RULER = "bendy_ruler"
 
 
+class ObstacleAvoidanceSensorSource(Enum):
+    """Live obstacle sensor data source."""
+    MAVLINK = "mavlink"
+    GPIO = "gpio"
+    ROS = "ros"
+
+
+class ObstacleAvoidanceCoverageMode(Enum):
+    """Obstacle sensor coverage pattern."""
+    FORWARD = "forward"
+    SURROUND_360 = "360"
+
+
 class TerrainSource(Enum):
     """Terrain following altitude data source."""
     RANGEFINDER = "rangefinder"
     TERRAIN_DATABASE = "terrain_database"
+
+
+@dataclass
+class ObstacleAvoidanceSensorConfig:
+    """Live obstacle sensing source configuration."""
+    source: ObstacleAvoidanceSensorSource = ObstacleAvoidanceSensorSource.MAVLINK
+    coverage_mode: ObstacleAvoidanceCoverageMode = ObstacleAvoidanceCoverageMode.FORWARD
+    mavlink_sensor_id: Optional[int] = 1
+    gpio_pin: Optional[int] = None
+    gpio_active_low: bool = True
+    ros_enabled: bool = False
+    ros_backend: str = "mavros"
+    ros_topic: Optional[str] = None
+    ros_frame_id: Optional[str] = None
+    ros_message_type: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "source": self.source.value,
+            "coverage_mode": self.coverage_mode.value,
+            "mavlink_sensor_id": self.mavlink_sensor_id,
+            "gpio_pin": self.gpio_pin,
+            "gpio_active_low": self.gpio_active_low,
+            "ros_enabled": self.ros_enabled,
+            "ros_backend": self.ros_backend,
+            "ros_topic": self.ros_topic,
+            "ros_frame_id": self.ros_frame_id,
+            "ros_message_type": self.ros_message_type,
+        }
+
+    @staticmethod
+    def from_dict(data: Optional[dict]) -> 'ObstacleAvoidanceSensorConfig':
+        data = data or {}
+        source_value = data.get("source", ObstacleAvoidanceSensorSource.MAVLINK.value)
+        coverage_value = data.get("coverage_mode", ObstacleAvoidanceCoverageMode.FORWARD.value)
+        try:
+            source = ObstacleAvoidanceSensorSource(str(source_value).strip().lower())
+        except ValueError:
+            source = ObstacleAvoidanceSensorSource.MAVLINK
+        try:
+            coverage_mode = ObstacleAvoidanceCoverageMode(str(coverage_value).strip().lower())
+        except ValueError:
+            coverage_mode = ObstacleAvoidanceCoverageMode.FORWARD
+
+        return ObstacleAvoidanceSensorConfig(
+            source=source,
+            coverage_mode=coverage_mode,
+            mavlink_sensor_id=data.get("mavlink_sensor_id", 1),
+            gpio_pin=data.get("gpio_pin"),
+            gpio_active_low=bool(data.get("gpio_active_low", True)),
+            ros_enabled=bool(data.get("ros_enabled", False)),
+            ros_backend=str(data.get("ros_backend", "mavros")).strip().lower(),
+            ros_topic=data.get("ros_topic"),
+            ros_frame_id=data.get("ros_frame_id"),
+            ros_message_type=data.get("ros_message_type"),
+        )
 
 
 @dataclass
@@ -55,6 +124,7 @@ class ObstacleAvoidanceConfig:
     behavior: str = "slide"
     bendy_ruler_type: str = "horizontal"
     obstacle_database_size: Optional[int] = None
+    sensor: ObstacleAvoidanceSensorConfig = None
 
     def to_dict(self) -> dict:
         return {
@@ -68,6 +138,7 @@ class ObstacleAvoidanceConfig:
             "behavior": self.behavior,
             "bendy_ruler_type": self.bendy_ruler_type,
             "obstacle_database_size": self.obstacle_database_size,
+            "sensor": self.sensor.to_dict() if self.sensor else ObstacleAvoidanceSensorConfig().to_dict(),
         }
 
     @staticmethod
@@ -90,6 +161,7 @@ class ObstacleAvoidanceConfig:
             behavior=str(data.get("behavior", "slide")).strip().lower(),
             bendy_ruler_type=str(data.get("bendy_ruler_type", "horizontal")).strip().lower(),
             obstacle_database_size=data.get("obstacle_database_size"),
+            sensor=ObstacleAvoidanceSensorConfig.from_dict(data.get("sensor")),
         )
 
 
@@ -104,6 +176,11 @@ class TerrainFollowingConfig:
     use_rangefinder_for_waypoints: bool = True
     rtl_terrain_enabled: bool = False
     terrain_spacing_meters: Optional[float] = None
+    ros_bridge_enabled: bool = False
+    ros_backend: str = "mavros"
+    ros_topic: Optional[str] = None
+    mavros_topic: Optional[str] = None
+    ros_frame_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -115,6 +192,11 @@ class TerrainFollowingConfig:
             "use_rangefinder_for_waypoints": self.use_rangefinder_for_waypoints,
             "rtl_terrain_enabled": self.rtl_terrain_enabled,
             "terrain_spacing_meters": self.terrain_spacing_meters,
+            "ros_bridge_enabled": self.ros_bridge_enabled,
+            "ros_backend": self.ros_backend,
+            "ros_topic": self.ros_topic,
+            "mavros_topic": self.mavros_topic,
+            "ros_frame_id": self.ros_frame_id,
         }
 
     @staticmethod
@@ -135,6 +217,11 @@ class TerrainFollowingConfig:
             use_rangefinder_for_waypoints=bool(data.get("use_rangefinder_for_waypoints", True)),
             rtl_terrain_enabled=bool(data.get("rtl_terrain_enabled", False)),
             terrain_spacing_meters=data.get("terrain_spacing_meters"),
+            ros_bridge_enabled=bool(data.get("ros_bridge_enabled", False)),
+            ros_backend=str(data.get("ros_backend", "mavros")).strip().lower(),
+            ros_topic=data.get("ros_topic"),
+            mavros_topic=data.get("mavros_topic"),
+            ros_frame_id=data.get("ros_frame_id"),
         )
 
 
@@ -575,6 +662,8 @@ class MissionPlanner:
             if terrain_spacing <= 0:
                 raise ValueError("terrain_spacing_meters must be positive")
             terrain.terrain_spacing_meters = terrain_spacing
+        if terrain.ros_backend not in {"mavros", "ros", "both"}:
+            raise ValueError("terrain ros_backend must be mavros, ros, or both")
 
         avoidance = navigation_config.obstacle_avoidance
         if avoidance.margin_meters < 0:
@@ -595,6 +684,18 @@ class MissionPlanner:
             raise ValueError("obstacle behavior must be stop or slide")
         if avoidance.bendy_ruler_type not in {"horizontal", "vertical"}:
             raise ValueError("bendy_ruler_type must be horizontal or vertical")
+        sensor = avoidance.sensor or ObstacleAvoidanceSensorConfig()
+        avoidance.sensor = sensor
+        if sensor.source == ObstacleAvoidanceSensorSource.GPIO and sensor.gpio_pin is None:
+            raise ValueError("obstacle avoidance gpio_pin is required when sensor source is gpio")
+        if sensor.source == ObstacleAvoidanceSensorSource.MAVLINK and sensor.mavlink_sensor_id is not None:
+            sensor.mavlink_sensor_id = int(sensor.mavlink_sensor_id)
+            if sensor.mavlink_sensor_id < 0:
+                raise ValueError("obstacle avoidance mavlink_sensor_id must be non-negative")
+        if sensor.ros_backend not in {"mavros", "ros", "both"}:
+            raise ValueError("obstacle sensor ros_backend must be mavros, ros, or both")
+        if sensor.coverage_mode not in {ObstacleAvoidanceCoverageMode.FORWARD, ObstacleAvoidanceCoverageMode.SURROUND_360}:
+            raise ValueError("obstacle sensor coverage_mode must be forward or 360")
 
     def get_state(self) -> Dict:
         """Get complete mission state for API clients."""

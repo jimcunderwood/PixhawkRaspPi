@@ -344,6 +344,17 @@ class ObstacleAvoidanceModeRequest(str, Enum):
     BENDY_RULER = "bendy_ruler"
 
 
+class ObstacleAvoidanceSensorSourceRequest(str, Enum):
+    MAVLINK = "mavlink"
+    GPIO = "gpio"
+    ROS = "ros"
+
+
+class ObstacleAvoidanceCoverageModeRequest(str, Enum):
+    FORWARD = "forward"
+    SURROUND_360 = "360"
+
+
 class ObstacleAvoidanceBehaviorRequest(str, Enum):
     STOP = "stop"
     SLIDE = "slide"
@@ -359,6 +370,19 @@ class TerrainSourceRequest(str, Enum):
     TERRAIN_DATABASE = "terrain_database"
 
 
+class ObstacleAvoidanceSensorSettingsRequest(BaseModel):
+    source: Optional[ObstacleAvoidanceSensorSourceRequest] = None
+    coverage_mode: Optional[ObstacleAvoidanceCoverageModeRequest] = None
+    mavlink_sensor_id: Optional[int] = Field(None, ge=0, le=255)
+    gpio_pin: Optional[int] = Field(None, ge=0, le=40)
+    gpio_active_low: Optional[bool] = None
+    ros_enabled: Optional[bool] = None
+    ros_backend: Optional[str] = Field(None, max_length=40)
+    ros_topic: Optional[str] = Field(None, max_length=120)
+    ros_frame_id: Optional[str] = Field(None, max_length=80)
+    ros_message_type: Optional[str] = Field(None, max_length=80)
+
+
 class ObstacleAvoidanceSettingsRequest(BaseModel):
     enabled: Optional[bool] = None
     mode: Optional[ObstacleAvoidanceModeRequest] = None
@@ -370,6 +394,7 @@ class ObstacleAvoidanceSettingsRequest(BaseModel):
     behavior: Optional[ObstacleAvoidanceBehaviorRequest] = None
     bendy_ruler_type: Optional[BendyRulerTypeRequest] = None
     obstacle_database_size: Optional[int] = Field(None, ge=0, le=10000)
+    sensor: Optional[ObstacleAvoidanceSensorSettingsRequest] = None
 
 
 class TerrainFollowingSettingsRequest(BaseModel):
@@ -381,6 +406,11 @@ class TerrainFollowingSettingsRequest(BaseModel):
     use_rangefinder_for_waypoints: Optional[bool] = None
     rtl_terrain_enabled: Optional[bool] = None
     terrain_spacing_meters: Optional[float] = Field(None, gt=0.0, le=1000.0)
+    ros_bridge_enabled: Optional[bool] = None
+    ros_backend: Optional[str] = Field(None, max_length=40)
+    ros_topic: Optional[str] = Field(None, max_length=120)
+    mavros_topic: Optional[str] = Field(None, max_length=120)
+    ros_frame_id: Optional[str] = Field(None, max_length=80)
 
 
 class NavigationConfigRequest(BaseModel):
@@ -636,7 +666,11 @@ class ServerAPI:
         self.command_event_lock = threading.Lock()
         self.idempotency_records: Dict[str, Dict] = {}
         self.idempotency_lock = threading.Lock()
-        self.audit_logger = AuditLogger(config.api.audit_log_file)
+        self.audit_logger = AuditLogger(
+            config.api.audit_log_file,
+            max_bytes=config.api.audit_log_max_bytes,
+            backup_count=config.api.audit_log_backup_count,
+        )
         self.config_profiles = ConfigProfileStore(config.api.config_database_file)
         self.control_authority = ControlAuthority(config.api.command_authority_lease_seconds)
 
@@ -921,6 +955,29 @@ class ServerAPI:
             return self.connection_manager.get_navigation_status()
         return {}
 
+    def _get_connection_status(self) -> Dict:
+        if hasattr(self.connection_manager, "get_connection_status"):
+            return self.connection_manager.get_connection_status()
+        connected = bool(getattr(self.connection_manager, "connected", False))
+        return {
+            "state": "connected" if connected else "offline",
+            "connected": connected,
+            "monitoring": False,
+            "reconnecting": False,
+            "retry_backoff_seconds": 0.0,
+            "max_retry_backoff_seconds": 0.0,
+            "last_changed_at": None,
+            "last_error": None,
+        }
+
+    def _get_navigation_sensor_status(self) -> Dict:
+        status = self._get_navigation_status()
+        return {
+            "obstacle_avoidance": status.get("obstacle_avoidance", {}).get("sensor", {}),
+            "terrain_following": status.get("terrain_following", {}).get("terrain", {}),
+            "distance_sensors": status.get("distance_sensors", []),
+        }
+
     def _get_calibration_config(self) -> Dict:
         if hasattr(self.payload_controller, "get_calibration_config"):
             return self.payload_controller.get_calibration_config()
@@ -1017,7 +1074,11 @@ class ServerAPI:
             restart_recommended.append("runtime")
 
         if "api" in applied:
-            self.audit_logger = AuditLogger(config.api.audit_log_file)
+            self.audit_logger = AuditLogger(
+                config.api.audit_log_file,
+                max_bytes=config.api.audit_log_max_bytes,
+                backup_count=config.api.audit_log_backup_count,
+            )
             self.config_profiles = ConfigProfileStore(config.api.config_database_file)
 
         navigation_result = None
@@ -1058,6 +1119,7 @@ class ServerAPI:
         navigation_status = self._get_navigation_status()
         obstacle_config = navigation_config.get("obstacle_avoidance", {})
         terrain_config = navigation_config.get("terrain_following", {})
+        obstacle_status = (navigation_status.get("obstacle_avoidance") or {}).get("sensor") or {}
 
         photo_directory = None
         storage = None
@@ -1076,6 +1138,7 @@ class ServerAPI:
 
         checks = {
             "pixhawk_connected": bool(self.connection_manager.connected),
+            "pixhawk_connection": self._get_connection_status(),
             "vehicle_status_available": bool(vehicle_state),
             "gps": (prearm_status or {}).get("gps"),
             "ekf_ok": (prearm_status or {}).get("ekf_ok"),
@@ -1104,6 +1167,7 @@ class ServerAPI:
             ),
             "navigation_config": navigation_config,
             "navigation_status": navigation_status,
+            "obstacle_avoidance_sensor": obstacle_status,
             "terrain": (prearm_status or {}).get("terrain"),
             "spray_pump_status": payload_status.get("spray_pump", {}).get("status"),
             "storage": storage,
@@ -1120,22 +1184,80 @@ class ServerAPI:
         return ReadinessCheck(ready=not checks["blocking_reasons"], checks=checks).model_dump()
 
     def _get_readiness_blockers(self, checks: Dict) -> List[str]:
+        blocking_reasons = []
+        blocking_reasons.extend(self._get_navigation_blockers(checks, include_armable=True))
+        blocking_reasons.extend(self._get_camera_blockers(checks))
+        blocking_reasons.extend(self._get_payload_readiness_blockers(checks))
+        blocking_reasons.extend(self._get_system_blockers(checks))
+        telemetry_age = checks.get("telemetry_age_seconds")
+        if (
+            config.api.telemetry_freshness_enabled
+            and (telemetry_age is None or telemetry_age > config.api.telemetry_stale_seconds)
+        ):
+            blocking_reasons.append("Vehicle telemetry is stale or unavailable.")
+        return blocking_reasons
+
+    def _get_navigation_blockers(self, checks: Dict, include_armable: bool = False) -> List[str]:
         gps = checks["gps"] or {}
         blocking_reasons = []
         if not checks["pixhawk_connected"]:
-            blocking_reasons.append("Pixhawk is not connected.")
+            connection_state = (checks.get("pixhawk_connection") or {}).get("state")
+            if connection_state == "reconnecting":
+                blocking_reasons.append("Pixhawk is reconnecting.")
+            else:
+                blocking_reasons.append("Pixhawk is not connected.")
         if not checks["vehicle_status_available"]:
             blocking_reasons.append("Vehicle status is unavailable.")
-        if checks["is_armable"] is False:
+        if include_armable and checks["is_armable"] is False:
             blocking_reasons.append("Vehicle is not armable.")
         if checks["ekf_ok"] is False:
             blocking_reasons.append("EKF is not healthy.")
         if gps and gps.get("fix_type", 0) < 3:
             blocking_reasons.append("GPS does not have a 3D fix.")
+        blocking_reasons.extend(self._get_obstacle_avoidance_blockers(checks))
+        blocking_reasons.extend(self._get_terrain_following_blockers(checks))
+        return blocking_reasons
+
+    def _get_obstacle_avoidance_blockers(self, checks: Dict) -> List[str]:
+        blocking_reasons = []
+        obstacle_config = (checks.get("navigation_config") or {}).get("obstacle_avoidance", {})
+        obstacle_status = checks.get("obstacle_avoidance_sensor") or {}
+        if checks["obstacle_avoidance_expected"]:
+            source = obstacle_config.get("sensor", {}).get("source", "mavlink")
+            if source == "mavlink" and not obstacle_status.get("available"):
+                blocking_reasons.append("Obstacle avoidance is enabled but obstacle sensor data is unavailable.")
+            if source == "gpio" and not obstacle_status.get("available"):
+                blocking_reasons.append("Obstacle avoidance is enabled but GPIO obstacle sensor is unavailable.")
+            if source == "ros" and not obstacle_status.get("available"):
+                blocking_reasons.append("Obstacle avoidance is enabled but ROS obstacle sensor bridge is unavailable.")
+        return blocking_reasons
+
+    def _get_terrain_following_blockers(self, checks: Dict) -> List[str]:
+        terrain_config = (checks.get("navigation_config") or {}).get("terrain_following", {})
+        terrain_status = checks.get("terrain") or {}
+        if (
+            checks["terrain_following_expected"]
+            and terrain_config.get("source") == "rangefinder"
+            and terrain_status.get("rangefinder_distance_meters") is None
+        ):
+            return ["Terrain following is enabled but rangefinder terrain data is unavailable."]
+        return []
+
+    def _get_camera_blockers(self, checks: Dict) -> List[str]:
+        blocking_reasons = []
         if checks["camera_expected"] and not checks["camera_available"]:
             blocking_reasons.append("Camera is enabled but unavailable.")
         if checks["camera_trigger_expected"] and not checks["camera_trigger_available"]:
             blocking_reasons.append("Camera trigger is enabled but unavailable.")
+        return blocking_reasons
+
+    def _get_armable_blockers(self, checks: Dict) -> List[str]:
+        if checks["is_armable"] is False:
+            return ["Vehicle is not armable."]
+        return []
+
+    def _get_payload_readiness_blockers(self, checks: Dict) -> List[str]:
+        blocking_reasons = []
         if checks["flow_sensor_expected"] and not checks["flow_sensor_available"]:
             blocking_reasons.append("Flow sensor is enabled but unavailable.")
         if checks["pressure_sensor_expected"] and not checks["pressure_sensor_available"]:
@@ -1145,26 +1267,16 @@ class ServerAPI:
         tank_level = checks.get("tank_level") or {}
         if tank_level.get("is_below_minimum"):
             blocking_reasons.append("Tank level is below configured minimum.")
-        terrain_config = (checks.get("navigation_config") or {}).get("terrain_following", {})
-        terrain_status = checks.get("terrain") or {}
-        if (
-            checks["terrain_following_expected"]
-            and terrain_config.get("source") == "rangefinder"
-            and terrain_status.get("rangefinder_distance_meters") is None
-        ):
-            blocking_reasons.append("Terrain following is enabled but rangefinder terrain data is unavailable.")
         if checks["spray_pump_status"] == "error":
             blocking_reasons.append("Spray pump is in error state.")
+        return blocking_reasons
+
+    def _get_system_blockers(self, checks: Dict) -> List[str]:
+        blocking_reasons = []
         if checks["storage"] is not None and "error" in checks["storage"]:
             blocking_reasons.append("Storage check failed.")
         if config.api.auth_enabled and not checks["api_key_configured"]:
             blocking_reasons.append("API auth is enabled but API_KEY is not configured.")
-        telemetry_age = checks.get("telemetry_age_seconds")
-        if (
-            config.api.telemetry_freshness_enabled
-            and (telemetry_age is None or telemetry_age > config.api.telemetry_stale_seconds)
-        ):
-            blocking_reasons.append("Vehicle telemetry is stale or unavailable.")
         return blocking_reasons
 
     def _get_safety_blockers(self, command: str) -> List[str]:
@@ -1173,43 +1285,16 @@ class ServerAPI:
 
         readiness = self._get_readiness_data()
         checks = readiness["checks"]
-        gps = checks.get("gps") or {}
         blockers = []
 
         if command in {"vehicle.arm", "vehicle.takeoff", "vehicle.goto", "mission.start", "payload.spray_start"}:
-            if not checks["pixhawk_connected"]:
-                blockers.append("Pixhawk is not connected.")
-            if not checks["vehicle_status_available"]:
-                blockers.append("Vehicle status is unavailable.")
-            if checks["ekf_ok"] is False:
-                blockers.append("EKF is not healthy.")
-            if gps and gps.get("fix_type", 0) < 3:
-                blockers.append("GPS does not have a 3D fix.")
-            terrain_config = (checks.get("navigation_config") or {}).get("terrain_following", {})
-            terrain_status = checks.get("terrain") or {}
-            if (
-                checks.get("terrain_following_expected")
-                and terrain_config.get("source") == "rangefinder"
-                and terrain_status.get("rangefinder_distance_meters") is None
-            ):
-                blockers.append("Terrain following is enabled but rangefinder terrain data is unavailable.")
+            blockers.extend(self._get_navigation_blockers(checks))
 
         if command in {"vehicle.arm", "vehicle.takeoff", "mission.start"}:
-            if checks["is_armable"] is False:
-                blockers.append("Vehicle is not armable.")
+            blockers.extend(self._get_armable_blockers(checks))
 
         if command == "payload.spray_start":
-            if checks["flow_sensor_expected"] and not checks["flow_sensor_available"]:
-                blockers.append("Flow sensor is enabled but unavailable.")
-            if checks["pressure_sensor_expected"] and not checks["pressure_sensor_available"]:
-                blockers.append("Pressure sensor is enabled but unavailable.")
-            if checks["tank_level_sensor_expected"] and not checks["tank_level_sensor_available"]:
-                blockers.append("Tank level sensor is enabled but unavailable.")
-            tank_level = checks.get("tank_level") or {}
-            if tank_level.get("is_below_minimum"):
-                blockers.append("Tank level is below configured minimum.")
-            if checks["spray_pump_status"] == "error":
-                blockers.append("Spray pump is in error state.")
+            blockers.extend(self._get_payload_readiness_blockers(checks))
 
         return blockers
 
@@ -1426,9 +1511,12 @@ class ServerAPI:
 
         @self.app.get("/health", tags=["System"])
         async def health_check():
+            connection_status = self._get_connection_status()
             return {
                 "status": "ok",
                 "connected": self.connection_manager.connected,
+                "pixhawk_connection": connection_status,
+                "pixhawk_connection_state": connection_status.get("state"),
                 "auth_enabled": config.api.auth_enabled,
             }
 
@@ -1469,6 +1557,7 @@ class ServerAPI:
                         "udp_ip": config.mavlink.udp_ip,
                         "udp_port": config.mavlink.udp_port,
                         "udp_direction": config.mavlink.udp_direction,
+                        "connection_status": self._get_connection_status(),
                     },
                     "mission": {
                         "max_waypoints": config.mission.max_waypoints,
@@ -1488,12 +1577,29 @@ class ServerAPI:
                             "behavior": config.mission.obstacle_avoidance_behavior,
                             "bendy_ruler_type": config.mission.obstacle_avoidance_bendy_ruler_type,
                             "obstacle_database_size": config.mission.obstacle_database_size,
+                            "sensor": {
+                                "source": config.mission.obstacle_avoidance_sensor_source,
+                                "coverage_mode": config.mission.obstacle_avoidance_sensor_coverage_mode,
+                                "mavlink_sensor_id": config.mission.obstacle_avoidance_sensor_mavlink_id,
+                                "gpio_pin": config.mission.obstacle_avoidance_sensor_gpio_pin,
+                                "gpio_active_low": config.mission.obstacle_avoidance_sensor_gpio_active_low,
+                                "ros_enabled": config.mission.obstacle_avoidance_sensor_ros_enabled,
+                                "ros_backend": config.mission.obstacle_avoidance_sensor_ros_backend,
+                                "ros_topic": config.mission.obstacle_avoidance_sensor_ros_topic,
+                                "ros_frame_id": config.mission.obstacle_avoidance_sensor_ros_frame_id,
+                                "ros_message_type": config.mission.obstacle_avoidance_sensor_ros_message_type,
+                            },
                         },
                         "terrain_following_defaults": {
                             "target_agl_meters": config.mission.terrain_target_agl_meters,
                             "use_rangefinder_for_waypoints": config.mission.terrain_use_rangefinder_for_waypoints,
                             "rtl_terrain_enabled": config.mission.terrain_rtl_enabled,
                             "terrain_spacing_meters": config.mission.terrain_spacing_meters,
+                            "ros_bridge_enabled": config.mission.terrain_ros_bridge_enabled,
+                            "ros_backend": config.mission.terrain_ros_backend,
+                            "ros_topic": config.mission.terrain_ros_topic,
+                            "mavros_topic": config.mission.terrain_mavros_topic,
+                            "ros_frame_id": config.mission.terrain_ros_frame_id,
                         },
                     },
                     "navigation": {
@@ -2006,6 +2112,19 @@ class ServerAPI:
             except HTTPException as e:
                 self._audit_http_error(action, {}, e)
                 raise
+
+        @self.app.get(
+            "/api/navigation/sensors",
+            response_model=StatusResponse,
+            tags=["Navigation"],
+            dependencies=protected,
+        )
+        async def get_navigation_sensors():
+            return StatusResponse(
+                status="success",
+                message="Navigation sensor data retrieved",
+                data=self._get_navigation_sensor_status(),
+            )
 
         @self.app.post(
             "/api/vehicle/arm",
@@ -2642,12 +2761,23 @@ class ServerAPI:
                 action = "payload.record_start"
                 try:
                     self._require_command_authority(x_control_token)
+                    video_path = self.payload_controller.camera.build_video_recording_path(
+                        session=request.session,
+                    )
                     self._require_success(
-                        self.payload_controller.camera.start_video_recording("/tmp/video.mp4"),
+                        self.payload_controller.camera.start_video_recording(str(video_path)),
                         "Video recording start failed.",
                     )
                     self._audit_command(action, "success", parameters=parameters)
-                    return StatusResponse(status="success", message="Recording started")
+                    return StatusResponse(
+                        status="success",
+                        message="Recording started",
+                        data={
+                            "filename": video_path.name,
+                            "path": str(video_path),
+                            "session": request.session or "default",
+                        },
+                    )
                 except HTTPException as e:
                     self._audit_http_error(action, parameters, e)
                     raise
@@ -3256,7 +3386,10 @@ class ServerAPI:
     async def _send_ws(self, websocket: WebSocket, data: dict):
         """Send WebSocket message"""
         try:
-            await websocket.send_json(data)
+            if isinstance(data, str):
+                await websocket.send_text(data)
+            else:
+                await websocket.send_json(data)
         except Exception as e:
             logger.error(f"Failed to send WebSocket message: {str(e)}")
 

@@ -35,6 +35,18 @@ from src.api.server import (
 class FakeConnectionManager:
     connected = True
 
+    def get_connection_status(self):
+        return {
+            "state": "connected",
+            "connected": True,
+            "monitoring": True,
+            "reconnecting": False,
+            "retry_backoff_seconds": 0.0,
+            "max_retry_backoff_seconds": 30.0,
+            "last_changed_at": 1234567890.0,
+            "last_error": None,
+        }
+
     def get_vehicle_state(self):
         return {
             "armed": False,
@@ -54,6 +66,62 @@ class FakeConnectionManager:
             "gps": {"fix_type": 3, "satellite_count": 10},
         }
 
+    def get_navigation_status(self):
+        return {
+            "obstacle_avoidance": {
+                "parameters": {
+                    "AVOID_ENABLE": 7,
+                },
+                "proximity": {
+                    "available": True,
+                    "source": "mavlink.distance_sensor",
+                    "sensor_id": 1,
+                    "coverage_mode": "forward",
+                    "distance_meters": 12.3,
+                },
+                "sensor": {
+                    "available": True,
+                    "source": "mavlink.distance_sensor",
+                    "sensor_id": 1,
+                    "coverage_mode": "forward",
+                    "distance_meters": 12.3,
+                    "mavlink_sensor_id": 1,
+                },
+            },
+            "terrain_following": {
+                "parameters": {
+                    "TERRAIN_ENABLE": 1,
+                },
+                "terrain": {
+                    "available": True,
+                    "source": "mavlink.distance_sensor",
+                    "sensor_id": 0,
+                    "rangefinder_distance_meters": 6.7,
+                },
+                "hooks": {
+                    "ros_bridge_enabled": True,
+                    "ros_backend": "mavros",
+                    "ros_topic": "/terrain/range",
+                    "mavros_topic": "/mavros/distance_sensor/hrlv_ez4_pub",
+                    "ros_frame_id": "base_link",
+                },
+            },
+            "distance_sensors": [
+                {
+                    "sensor_id": 0,
+                    "orientation": 25,
+                    "distance_meters": 6.7,
+                    "source": "mavlink.distance_sensor",
+                },
+                {
+                    "sensor_id": 1,
+                    "orientation": 0,
+                    "distance_meters": 12.3,
+                    "source": "mavlink.distance_sensor",
+                },
+            ],
+        }
+
     def upload_mission(self, mission_items):
         return {"success": True, "uploaded_count": len(mission_items)}
 
@@ -71,8 +139,45 @@ class FakeMissionPlanner:
     def __init__(self):
         self.mission_items = []
         self.navigation_config = {
-            "obstacle_avoidance": {},
-            "terrain_following": {},
+            "obstacle_avoidance": {
+                "enabled": False,
+                "mode": "simple",
+                "margin_meters": 2.0,
+                "lookahead_meters": 5.0,
+                "backup_speed_mps": 0.0,
+                "min_altitude_meters": 0.0,
+                "proximity_type": 4,
+                "behavior": "slide",
+                "bendy_ruler_type": "horizontal",
+                "obstacle_database_size": None,
+                "sensor": {
+                    "source": "mavlink",
+                    "coverage_mode": "forward",
+                    "mavlink_sensor_id": 1,
+                    "gpio_pin": None,
+                    "gpio_active_low": True,
+                    "ros_enabled": True,
+                    "ros_backend": "mavros",
+                    "ros_topic": "/obstacle/distance",
+                    "ros_frame_id": "base_link",
+                    "ros_message_type": "std_msgs/Float32",
+                },
+            },
+            "terrain_following": {
+                "enabled": False,
+                "source": "rangefinder",
+                "min_agl_meters": 2.0,
+                "max_agl_meters": 120.0,
+                "target_agl_meters": None,
+                "use_rangefinder_for_waypoints": True,
+                "rtl_terrain_enabled": False,
+                "terrain_spacing_meters": None,
+                "ros_bridge_enabled": True,
+                "ros_backend": "mavros",
+                "ros_topic": "/terrain/range",
+                "mavros_topic": "/mavros/distance_sensor/hrlv_ez4_pub",
+                "ros_frame_id": "base_link",
+            },
         }
 
     def pause_mission(self):
@@ -252,6 +357,195 @@ def test_navigation_config_request_model():
     assert request.obstacle_avoidance.mode == "bendy_ruler"
     assert request.terrain_following.source == "rangefinder"
     assert request.apply_to_pixhawk is True
+
+
+def test_navigation_config_serialization_exposes_sensor_hooks(server_api, monkeypatch):
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_enabled", True)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_mode", "bendy_ruler")
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_margin_meters", 3.0)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_lookahead_meters", 8.0)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_backup_speed_mps", 1.5)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_min_altitude_meters", 2.5)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_proximity_type", 4)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_behavior", "slide")
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_bendy_ruler_type", "horizontal")
+    monkeypatch.setattr(server_module.config.mission, "obstacle_database_size", 250)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_source", "gpio")
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_coverage_mode", "360")
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_mavlink_id", 1)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_gpio_pin", 23)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_gpio_active_low", False)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_ros_enabled", True)
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_ros_backend", "mavros")
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_ros_topic", "/obstacle/distance")
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_ros_frame_id", "base_link")
+    monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_sensor_ros_message_type", "std_msgs/Float32")
+    monkeypatch.setattr(server_module.config.mission, "terrain_target_agl_meters", 9.5)
+    monkeypatch.setattr(server_module.config.mission, "terrain_use_rangefinder_for_waypoints", True)
+    monkeypatch.setattr(server_module.config.mission, "terrain_rtl_enabled", False)
+    monkeypatch.setattr(server_module.config.mission, "terrain_spacing_meters", 15.0)
+    monkeypatch.setattr(server_module.config.mission, "terrain_ros_bridge_enabled", True)
+    monkeypatch.setattr(server_module.config.mission, "terrain_ros_backend", "mavros")
+    monkeypatch.setattr(server_module.config.mission, "terrain_ros_topic", "/terrain/range")
+    monkeypatch.setattr(server_module.config.mission, "terrain_mavros_topic", "/mavros/distance_sensor/hrlv_ez4_pub")
+    monkeypatch.setattr(server_module.config.mission, "terrain_ros_frame_id", "base_link")
+
+    async def exercise_routes():
+        endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/system/info",
+            "GET",
+        )
+        response = await endpoint()
+        return response
+
+    response = asyncio.run(exercise_routes())
+    system_info = response.data
+
+    obstacle_defaults = system_info["mission"]["obstacle_avoidance_defaults"]
+    terrain_defaults = system_info["mission"]["terrain_following_defaults"]
+    obstacle_sensor = obstacle_defaults["sensor"]
+    navigation_config = system_info["navigation"]["config"]
+    navigation_pixhawk = system_info["navigation"]["pixhawk"]
+    mavlink_status = system_info["mavlink"]["connection_status"]
+
+    assert obstacle_defaults["enabled"] is True
+    assert obstacle_defaults["mode"] == "bendy_ruler"
+    assert obstacle_sensor["source"] == "gpio"
+    assert obstacle_sensor["coverage_mode"] == "360"
+    assert obstacle_sensor["mavlink_sensor_id"] == 1
+    assert obstacle_sensor["gpio_pin"] == 23
+    assert obstacle_sensor["gpio_active_low"] is False
+    assert obstacle_sensor["ros_enabled"] is True
+    assert obstacle_sensor["ros_backend"] == "mavros"
+    assert obstacle_sensor["ros_topic"] == "/obstacle/distance"
+    assert obstacle_sensor["ros_frame_id"] == "base_link"
+    assert obstacle_sensor["ros_message_type"] == "std_msgs/Float32"
+    assert terrain_defaults["ros_bridge_enabled"] is True
+    assert terrain_defaults["ros_backend"] == "mavros"
+    assert terrain_defaults["ros_topic"] == "/terrain/range"
+    assert terrain_defaults["mavros_topic"] == "/mavros/distance_sensor/hrlv_ez4_pub"
+    assert terrain_defaults["ros_frame_id"] == "base_link"
+    assert mavlink_status["state"] == "connected"
+    assert mavlink_status["connected"] is True
+    assert navigation_config["obstacle_avoidance"]["sensor"]["coverage_mode"] == "forward"
+    assert navigation_config["obstacle_avoidance"]["sensor"]["ros_topic"] == "/obstacle/distance"
+    assert navigation_config["terrain_following"]["ros_bridge_enabled"] is True
+    assert navigation_config["terrain_following"]["mavros_topic"] == "/mavros/distance_sensor/hrlv_ez4_pub"
+    assert navigation_pixhawk["obstacle_avoidance"]["sensor"]["available"] is True
+    assert navigation_pixhawk["terrain_following"]["hooks"]["ros_bridge_enabled"] is True
+    assert navigation_pixhawk["distance_sensors"][0]["sensor_id"] == 0
+
+    snapshot = server_api._current_config_snapshot()
+    assert snapshot["navigation"]["obstacle_avoidance"]["sensor"]["source"] == "mavlink"
+    assert snapshot["navigation"]["obstacle_avoidance"]["sensor"]["ros_topic"] == "/obstacle/distance"
+    assert snapshot["navigation"]["terrain_following"]["ros_bridge_enabled"] is True
+    assert snapshot["navigation"]["terrain_following"]["mavros_topic"] == "/mavros/distance_sensor/hrlv_ez4_pub"
+
+
+def test_navigation_sensors_endpoint_exposes_live_status(server_api):
+    async def exercise_routes():
+        endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/navigation/sensors",
+            "GET",
+        )
+        response = await endpoint()
+        return response
+
+    response = asyncio.run(exercise_routes())
+    data = response.data
+
+    assert data["obstacle_avoidance"]["available"] is True
+    assert data["obstacle_avoidance"]["source"] == "mavlink.distance_sensor"
+    assert data["obstacle_avoidance"]["sensor_id"] == 1
+    assert data["terrain_following"]["available"] is True
+    assert data["terrain_following"]["source"] == "mavlink.distance_sensor"
+    assert data["terrain_following"]["sensor_id"] == 0
+    assert data["distance_sensors"][0]["sensor_id"] == 0
+    assert data["distance_sensors"][1]["sensor_id"] == 1
+
+
+def test_health_and_readiness_expose_pixhawk_connection_state(server_api, monkeypatch):
+    monkeypatch.setattr(
+        server_api.connection_manager,
+        "get_connection_status",
+        lambda: {
+            "state": "reconnecting",
+            "connected": False,
+            "monitoring": True,
+            "reconnecting": True,
+            "retry_backoff_seconds": 4.0,
+            "max_retry_backoff_seconds": 30.0,
+            "last_changed_at": 1234567890.0,
+            "last_error": "heartbeat timeout",
+        },
+    )
+    server_api.connection_manager.connected = False
+
+    async def exercise_routes():
+        health_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/health",
+            "GET",
+        )
+        readiness_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/readiness",
+            "GET",
+        )
+        health_response = await health_endpoint()
+        readiness_response = await readiness_endpoint()
+        return health_response, readiness_response
+
+    health_response, readiness_response = asyncio.run(exercise_routes())
+
+    assert health_response["pixhawk_connection"]["state"] == "reconnecting"
+    assert health_response["pixhawk_connection_state"] == "reconnecting"
+    assert readiness_response.data["checks"]["pixhawk_connection"]["state"] == "reconnecting"
+    assert "Pixhawk is reconnecting." in readiness_response.data["checks"]["blocking_reasons"]
+
+
+def test_payload_record_start_uses_session_video_path(server_api, monkeypatch, tmp_path):
+    class FakeVideoCamera:
+        def __init__(self):
+            self.recorded_paths = []
+
+        def build_video_recording_path(self, session=None):
+            session_name = session or "default"
+            return tmp_path / session_name / "videos" / f"video_{session_name}.mp4"
+
+        def start_video_recording(self, filename):
+            self.recorded_paths.append(filename)
+            return True
+
+        def stop_video_recording(self):
+            return True
+
+    server_api.payload_controller.camera = FakeVideoCamera()
+    monkeypatch.setattr(server_api, "_require_command_authority", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server_api, "_require_success", lambda *args, **kwargs: None)
+
+    async def exercise_routes():
+        endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/payload/control",
+            "POST",
+        )
+        response = await endpoint(
+            server_module.PayloadControlRequest(action=server_module.PayloadAction.RECORD_START, session="field-7"),
+            x_control_token=None,
+        )
+        return response
+
+    response = asyncio.run(exercise_routes())
+
+    assert response.status == "success"
+    assert response.data["session"] == "field-7"
+    assert response.data["path"].endswith("field-7/videos/video_field-7.mp4")
+    assert server_api.payload_controller.camera.recorded_paths == [
+        response.data["path"]
+    ]
 
 
 class FakeRequest:

@@ -10,6 +10,7 @@ RPi.GPIO>=0.7.1
 board>=1.0
 adafruit-circuitpython-busdevice>=5.2.6
 pyserial>=3.5
+spidev>=3.6
 numpy>=1.24.3
 opencv-python>=4.8.1.78
 pillow>=10.1.0

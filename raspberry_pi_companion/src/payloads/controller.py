@@ -242,7 +242,7 @@ class FlowSensor:
 class CameraTrigger:
     """Optional GPIO trigger output for external camera shutters."""
 
-    def __init__(self, gpio_pin: int, pulse_ms: int = 100):
+    def __init__(self, gpio_pin: int, pulse_ms: float = 100.0):
         self.gpio_pin = gpio_pin
         self.pulse_ms = pulse_ms
         self.trigger_count = 0
@@ -271,7 +271,7 @@ class CameraTrigger:
             with self._lock:
                 if self.GPIO:
                     self.GPIO.output(self.gpio_pin, self.GPIO.HIGH)
-                    time.sleep(max(1, self.pulse_ms) / 1000)
+                    time.sleep(max(0.0, float(self.pulse_ms)) / 1000.0)
                     self.GPIO.output(self.gpio_pin, self.GPIO.LOW)
                 self.trigger_count += 1
                 self.last_triggered_at = now
@@ -688,6 +688,7 @@ class CameraController:
         self._latest_frame = None
         self._last_frame_time = None
         self._lock = threading.Lock()
+        self._idle_capture_interval = 0.1
 
         try:
             self.photo_directory.mkdir(parents=True, exist_ok=True)
@@ -731,6 +732,9 @@ class CameraController:
                     self._last_frame_time = time.time()
                     if self.is_recording and self._video_writer:
                         self._video_writer.write(frame)
+
+                if not self.is_recording:
+                    time.sleep(self._idle_capture_interval)
 
             except Exception as e:
                 logger.error(f"Camera capture loop failed: {str(e)}")
@@ -985,6 +989,21 @@ class CameraController:
             return None
 
         return photo_path
+
+    def build_video_recording_path(self, session: Optional[str] = None) -> Path:
+        """Build a unique path for a new video recording."""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        monotonic_ms = int(time.monotonic() * 1000) % 100000
+        safe_session = self._safe_session_name(session)
+        if session:
+            target_dir = self._session_directory(session) / "videos"
+            filename = f"video_{safe_session}_{timestamp}_{monotonic_ms:05d}.mp4"
+        else:
+            target_dir = self.photo_directory / "videos"
+            filename = f"video_{timestamp}_{monotonic_ms:05d}.mp4"
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir / filename
 
     def reset_photos(self, session: Optional[str] = None) -> int:
         """Delete captured photos and return the number removed."""

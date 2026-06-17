@@ -17,18 +17,25 @@ logger = logging.getLogger(__name__)
 
 class TelemetryPoint:
     """Single telemetry data point"""
-    
+
+    __slots__ = ("timestamp", "_payload_json")
+
     def __init__(self, timestamp: float, vehicle_state: dict):
         self.timestamp = timestamp
-        self.vehicle_state = vehicle_state
+        payload = {
+            "timestamp": timestamp,
+            "datetime": datetime.fromtimestamp(timestamp).isoformat(),
+            **vehicle_state,
+        }
+        self._payload_json = json.dumps(payload, separators=(",", ":"))
 
     def to_dict(self) -> dict:
         """Convert to dictionary"""
-        return {
-            'timestamp': self.timestamp,
-            'datetime': datetime.fromtimestamp(self.timestamp).isoformat(),
-            **self.vehicle_state
-        }
+        return json.loads(self._payload_json)
+
+    def to_json(self) -> str:
+        """Return a compact JSON payload for websocket broadcast."""
+        return self._payload_json
 
 
 class TelemetryCollector:
@@ -83,11 +90,11 @@ class TelemetryCollector:
             timestamp = time.time()
             point = TelemetryPoint(timestamp, vehicle_state)
             self.history.append(point)
-            self.current_state = vehicle_state
+            self.current_state = dict(vehicle_state)
             self.last_update = timestamp
             
             # Trigger callbacks
-            for callback in self._callbacks:
+            for callback in list(self._callbacks):
                 try:
                     callback(point)
                 except Exception as e:
@@ -174,7 +181,8 @@ class TelemetryCollector:
 
     def register_callback(self, callback: Callable):
         """Register callback for telemetry updates"""
-        self._callbacks.append(callback)
+        with self._lock:
+            self._callbacks.append(callback)
 
     def clear_history(self):
         """Clear all stored telemetry data"""
@@ -201,17 +209,17 @@ class LiveTelemetryStream:
             del self.subscribers[client_id]
             logger.info(f"Client {client_id} unsubscribed from telemetry")
 
-    def broadcast(self, data: dict):
+    def broadcast(self, data: str):
         """Broadcast telemetry to all subscribers"""
         disconnected = []
-        
+
         for client_id, send_callback in self.subscribers.items():
             try:
                 send_callback(data)
             except Exception as e:
                 logger.warning(f"Failed to send to {client_id}: {str(e)}")
                 disconnected.append(client_id)
-        
+
         # Clean up disconnected clients
         for client_id in disconnected:
             self.unsubscribe(client_id)
@@ -242,7 +250,7 @@ class TelemetryManager:
 
     def _on_telemetry_update(self, point: TelemetryPoint):
         """Handle new telemetry point"""
-        self.stream.broadcast(point.to_dict())
+        self.stream.broadcast(point.to_json())
 
     def get_current(self) -> Optional[Dict]:
         """Get current telemetry"""

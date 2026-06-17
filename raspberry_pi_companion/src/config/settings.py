@@ -103,6 +103,8 @@ class APIConfig:
     telemetry_freshness_enabled: bool = _parse_bool(os.getenv("TELEMETRY_FRESHNESS_ENABLED", "True"))
     telemetry_stale_seconds: float = float(os.getenv("TELEMETRY_STALE_SECONDS", "3"))
     payload_stale_seconds: float = float(os.getenv("PAYLOAD_STALE_SECONDS", "3"))
+    audit_log_max_bytes: int = int(os.getenv("AUDIT_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+    audit_log_backup_count: int = int(os.getenv("AUDIT_LOG_BACKUP_COUNT", "5"))
     audit_log_file: str = os.getenv(
         "AUDIT_LOG_FILE",
         os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "audit", "events.jsonl"),
@@ -130,7 +132,7 @@ class PayloadConfig:
     camera_port: int = int(os.getenv("CAMERA_PORT", "0"))
     camera_trigger_enabled: bool = _parse_bool(os.getenv("CAMERA_TRIGGER_ENABLED", "False"))
     camera_trigger_pin: int = int(os.getenv("CAMERA_TRIGGER_PIN", "22"))
-    camera_trigger_pulse_ms: int = int(os.getenv("CAMERA_TRIGGER_PULSE_MS", "100"))
+    camera_trigger_pulse_ms: float = float(os.getenv("CAMERA_TRIGGER_PULSE_MS", "100"))
     data_directory: str = os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion")
     photo_directory: str = os.getenv(
         "PHOTO_DIRECTORY",
@@ -206,12 +208,44 @@ class MissionConfig:
         "horizontal",
     ).strip().lower()
     obstacle_database_size: int | None = _parse_optional_int(os.getenv("OBSTACLE_DATABASE_SIZE", ""))
+    obstacle_avoidance_sensor_source: str = os.getenv("OBSTACLE_AVOIDANCE_SENSOR_SOURCE", "mavlink").strip().lower()
+    obstacle_avoidance_sensor_coverage_mode: str = os.getenv(
+        "OBSTACLE_AVOIDANCE_SENSOR_COVERAGE_MODE",
+        "forward",
+    ).strip().lower()
+    obstacle_avoidance_sensor_mavlink_id: int | None = _parse_optional_int(
+        os.getenv("OBSTACLE_AVOIDANCE_SENSOR_MAVLINK_ID", "1")
+    )
+    obstacle_avoidance_sensor_gpio_pin: int | None = _parse_optional_int(
+        os.getenv("OBSTACLE_AVOIDANCE_SENSOR_GPIO_PIN", "")
+    )
+    obstacle_avoidance_sensor_gpio_active_low: bool = _parse_bool(
+        os.getenv("OBSTACLE_AVOIDANCE_SENSOR_GPIO_ACTIVE_LOW", "True")
+    )
+    obstacle_avoidance_sensor_ros_enabled: bool = _parse_bool(
+        os.getenv("OBSTACLE_AVOIDANCE_SENSOR_ROS_ENABLED", "False")
+    )
+    obstacle_avoidance_sensor_ros_backend: str = os.getenv(
+        "OBSTACLE_AVOIDANCE_SENSOR_ROS_BACKEND",
+        "mavros",
+    ).strip().lower()
+    obstacle_avoidance_sensor_ros_topic: str = os.getenv("OBSTACLE_AVOIDANCE_SENSOR_ROS_TOPIC", "").strip()
+    obstacle_avoidance_sensor_ros_frame_id: str = os.getenv("OBSTACLE_AVOIDANCE_SENSOR_ROS_FRAME_ID", "").strip()
+    obstacle_avoidance_sensor_ros_message_type: str = os.getenv(
+        "OBSTACLE_AVOIDANCE_SENSOR_ROS_MESSAGE_TYPE",
+        "std_msgs/Float32",
+    ).strip()
     terrain_target_agl_meters: float | None = _parse_optional_float(os.getenv("TERRAIN_TARGET_AGL_METERS", ""))
     terrain_use_rangefinder_for_waypoints: bool = _parse_bool(
         os.getenv("TERRAIN_USE_RANGEFINDER_FOR_WAYPOINTS", "True")
     )
     terrain_rtl_enabled: bool = _parse_bool(os.getenv("TERRAIN_RTL_ENABLED", "False"))
     terrain_spacing_meters: float | None = _parse_optional_float(os.getenv("TERRAIN_SPACING_METERS", ""))
+    terrain_ros_bridge_enabled: bool = _parse_bool(os.getenv("TERRAIN_ROS_BRIDGE_ENABLED", "False"))
+    terrain_ros_backend: str = os.getenv("TERRAIN_ROS_BACKEND", "mavros").strip().lower()
+    terrain_ros_topic: str = os.getenv("TERRAIN_ROS_TOPIC", "").strip()
+    terrain_mavros_topic: str = os.getenv("TERRAIN_MAVROS_TOPIC", "").strip()
+    terrain_ros_frame_id: str = os.getenv("TERRAIN_ROS_FRAME_ID", "").strip()
 
 
 @dataclass

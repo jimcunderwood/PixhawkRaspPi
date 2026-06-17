@@ -324,9 +324,19 @@ TERRAIN_TARGET_AGL_METERS=
 [Telemetry]
 TELEMETRY_UPDATE_INTERVAL=0.5
 TELEMETRY_HISTORY_SIZE=3600
+
+[Audit]
+AUDIT_LOG_FILE=/var/lib/drone-companion/audit/events.jsonl
+AUDIT_LOG_MAX_BYTES=5242880
+AUDIT_LOG_BACKUP_COUNT=5
 ```
 
 Configuration is loaded into a `Config` singleton at startup.
+
+The audit logger writes JSONL events and rotates the active file once it grows
+past `AUDIT_LOG_MAX_BYTES`, keeping up to `AUDIT_LOG_BACKUP_COUNT` rotated
+files alongside it. That keeps long-running missions from accumulating an
+unbounded command log on the Pi.
 
 ## Threading Model
 

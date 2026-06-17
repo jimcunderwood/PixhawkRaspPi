@@ -48,9 +48,27 @@ Key configuration options:
 - `API_KEY`: Shared API key required by protected REST and WebSocket endpoints
 - `CORS_ORIGINS`: Comma-separated browser origins allowed to call the API
 - `SPRAY_PUMP_PIN`, `FLOW_SENSOR_PIN`: GPIO pins for hardware
-- `OBSTACLE_AVOIDANCE_*`: ArduPilot simple/BendyRuler avoidance defaults
-- `TERRAIN_*`: Terrain following source, AGL limits, and waypoint/RTL behavior
+- `OBSTACLE_AVOIDANCE_*`: ArduPilot avoidance defaults plus live sensor source
+- `OBSTACLE_AVOIDANCE_SENSOR_*`: Obstacle sensor source, 360-mode, Pixhawk ID, GPIO, and ROS hooks
+- `TERRAIN_*`: Terrain following source, AGL limits, waypoint/RTL behavior, and ROS/MAVROS hooks
+- `AUDIT_LOG_FILE`: JSONL audit log path, usually under `/var/lib/drone-companion/audit/`
+- `AUDIT_LOG_MAX_BYTES`: Rotate the audit log once it reaches this many bytes
+- `AUDIT_LOG_BACKUP_COUNT`: How many rotated audit files to keep
+- `CAMERA_TRIGGER_PULSE_MS`: Camera trigger pulse duration in milliseconds; fractional values are allowed
 - `LOG_LEVEL`: Logging verbosity (INFO, DEBUG, WARNING, ERROR)
+
+Obstacle avoidance sensor options:
+- `OBSTACLE_AVOIDANCE_SENSOR_SOURCE=mavlink`: read live Pixhawk `DISTANCE_SENSOR` data
+- `OBSTACLE_AVOIDANCE_SENSOR_SOURCE=gpio`: read a local Raspberry Pi GPIO input
+- `OBSTACLE_AVOIDANCE_SENSOR_SOURCE=ros`: subscribe to a ROS topic
+- `OBSTACLE_AVOIDANCE_SENSOR_COVERAGE_MODE=forward`: treat the sensor as a forward-facing obstacle detector
+- `OBSTACLE_AVOIDANCE_SENSOR_COVERAGE_MODE=360`: treat the sensor as a 360-degree sensor for ROS/UI logic
+- `OBSTACLE_AVOIDANCE_SENSOR_MAVLINK_ID=1`: default Pixhawk sensor ID for obstacle avoidance
+
+Terrain ROS hooks:
+- `TERRAIN_ROS_BRIDGE_ENABLED=True` enables terrain bridge metadata in the API
+- `TERRAIN_ROS_BACKEND=mavros` keeps the terrain hooks compatible with MAVROS
+- `TERRAIN_MAVROS_TOPIC` and `TERRAIN_ROS_TOPIC` let you document the ROS/MAVROS topic names you plan to use
 
 ### 4. Test the connection
 ```bash
@@ -118,27 +136,54 @@ GET  /api/v1/field-boundaries         - Get all field boundaries
 GET  /api/v1/navigation/config        - Get avoidance/terrain config and Pixhawk status
 POST /api/v1/navigation/config        - Update companion navigation config
 POST /api/v1/navigation/apply         - Apply saved navigation config to Pixhawk params
+GET  /api/v1/navigation/sensors       - Get live obstacle/terrain sensor data
 ```
 
 When terrain following is enabled, new mission waypoints default to the
 `terrain` altitude frame unless a waypoint explicitly sets `altitude_frame` to
 `relative`.
 
-Pixhawk rangefinders are read live from MAVLink `DISTANCE_SENSOR` messages, not
-from Raspberry Pi GPIO pins. The current sensor mapping is:
+Terrain following stays on the Pixhawk and still reads live MAVLink rangefinder
+data. The current mapping is:
 
 - `RNGFND1` / `DISTANCE_SENSOR id=0`: terrain following
-- `RNGFND2` / `DISTANCE_SENSOR id=1`: obstacle avoidance
+- `RNGFND2` / `DISTANCE_SENSOR id=1`: obstacle avoidance by default
 
-Obstacle avoidance still uses ArduPilot's configured proximity or rangefinder
-sensors; the companion app reads and reports the live Pixhawk data, but it does
-not replace ArduPilot's flight-critical avoidance logic.
+Obstacle avoidance can be sourced from Pixhawk MAVLink, a GPIO pin, or ROS
+hooks depending on config. The companion app reads and reports the live sensor
+data, but it does not replace ArduPilot's flight-critical avoidance logic.
+
+ROS/MAVROS terrain hooks are exposed in config so the terrain workflow can be
+integrated with a ROS stack later without changing the Pixhawk-side defaults.
+
+Example `.env` setup:
+```env
+AUDIT_LOG_FILE=/var/lib/drone-companion/audit/events.jsonl
+AUDIT_LOG_MAX_BYTES=5242880
+AUDIT_LOG_BACKUP_COUNT=5
+OBSTACLE_AVOIDANCE_SENSOR_SOURCE=mavlink
+OBSTACLE_AVOIDANCE_SENSOR_COVERAGE_MODE=forward
+OBSTACLE_AVOIDANCE_SENSOR_MAVLINK_ID=1
+OBSTACLE_AVOIDANCE_SENSOR_ROS_ENABLED=False
+TERRAIN_ROS_BRIDGE_ENABLED=True
+TERRAIN_ROS_BACKEND=mavros
+TERRAIN_MAVROS_TOPIC=/mavros/distance_sensor/hrlv_ez4_pub
+TERRAIN_ROS_TOPIC=/terrain/range
+```
+
+If you use pressure or tank sensors with `SOURCE=adc`, install `spidev`.
+The MCP3008 ADC reader depends on it.
 
 ### Payload Control
 ```
 POST /api/v1/payload/control          - Control spray, camera
 GET  /api/v1/payload/status           - Get payload status
 ```
+
+Photo captures are stored under the configured `PHOTO_DIRECTORY`, grouped by
+session when one is provided. Video recordings now use a session-scoped path
+under `PHOTO_DIRECTORY/videos/`, so each recording gets its own file instead of
+overwriting `/tmp/video.mp4`.
 
 ### Telemetry
 ```
