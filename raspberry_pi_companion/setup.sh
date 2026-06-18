@@ -37,6 +37,7 @@ echo "Installing system dependencies..."
 "${SUDO[@]}" apt-get install -y \
   git \
   curl \
+  ripgrep \
   libssl-dev \
   libffi-dev \
   libjpeg-dev \

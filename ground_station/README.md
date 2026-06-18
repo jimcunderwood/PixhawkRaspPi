@@ -38,6 +38,10 @@ ground_station/
 - Model drones as a fleet with stable IDs, roles, and transport metadata.
 - Treat transport as an adapter layer so web, desktop, and mobile can each use the best available channel.
 - Avoid hard-coding `http` as the only control path; the app should tolerate WebSocket, local IPC, UDP/MAVLink bridge, or other device-appropriate links.
+- The first working web shell now lives in `apps/web/` and is wired for map, telemetry, and mission drafting.
+- Shared mission planning, telemetry parsing, and companion API helpers live under `shared/` so desktop and mobile shells can reuse the same behavior without duplicate logic.
+- Shared UI atoms and reusable panels live under `packages/ui/`; platform shells should compose those instead of re-implementing common status/metric widgets.
+- Route save/load/upload should be implemented against the shared mission helpers first, then consumed by web, desktop, and mobile shells from the same code path.
 
 ## Recommended Ground Station Contract
 

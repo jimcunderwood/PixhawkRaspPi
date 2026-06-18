@@ -17,7 +17,10 @@ agri_dronesetup/
 │   │   ├── payloads/
 │   │   │   └── controller.py       # Spray pump, camera, sensors
 │   │   ├── telemetry/
-│   │   │   └── collector.py        # Telemetry collection & streaming
+│   │   │   ├── collector.py        # Telemetry collection & streaming
+│   │   │   └── database.py         # SQLite telemetry archive and queries
+│   │   ├── logsync/
+│   │   │   └── manager.py          # Post-flight Pixhawk/companion log sync
 │   │   ├── api/
 │   │   │   └── server.py           # FastAPI REST/WebSocket server
 │   │   └── __init__.py

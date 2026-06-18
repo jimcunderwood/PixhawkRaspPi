@@ -4,8 +4,10 @@ Main API interface for ground station communication
 """
 
 import asyncio
+import csv
 import hashlib
 import hmac
+import io
 import logging
 import os
 import re
@@ -17,8 +19,11 @@ import time
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
+import cv2
+import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Security, WebSocket, WebSocketDisconnect
 from fastapi.routing import APIRoute
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +36,15 @@ from starlette.background import BackgroundTask
 from ..audit.logger import AuditLogger
 from ..config.profiles import ConfigProfileStore
 from ..config.settings import config
+from ..mapping.planner import (
+    CameraSpec,
+    GeotagRecord,
+    MappingPlanner,
+    PointCloudScanConfig,
+    SurveyGridConfig,
+    VegetationCaptureProfile,
+)
+from ..safety.manager import GeofenceZone, SafetyManager
 
 logger = logging.getLogger(__name__)
 
@@ -542,6 +556,72 @@ class FieldBoundaryRequest(BaseModel):
     )
 
 
+class MappingCameraSpecRequest(BaseModel):
+    sensor_width_mm: float = Field(..., gt=0.0, le=100.0)
+    sensor_height_mm: float = Field(..., gt=0.0, le=100.0)
+    image_width_px: int = Field(..., ge=1, le=50000)
+    image_height_px: int = Field(..., ge=1, le=50000)
+    focal_length_mm: float = Field(..., gt=0.0, le=200.0)
+
+
+class TerrainSampleRequest(BaseModel):
+    latitude: float = Field(..., ge=-90.0, le=90.0)
+    longitude: float = Field(..., ge=-180.0, le=180.0)
+    elevation_m: float = Field(..., ge=-1000.0, le=10000.0)
+
+
+class SurveyGridPlanRequest(BaseModel):
+    field_boundary: FieldBoundaryRequest
+    camera_spec: MappingCameraSpecRequest
+    survey_config: Optional[Dict] = None
+    terrain_samples: Optional[List[TerrainSampleRequest]] = None
+
+
+class GeotagRecordRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=260)
+    latitude: float = Field(..., ge=-90.0, le=90.0)
+    longitude: float = Field(..., ge=-180.0, le=180.0)
+    altitude_m: float = Field(..., ge=-1000.0, le=10000.0)
+    captured_at: float = Field(..., ge=0.0)
+    heading_deg: Optional[float] = Field(None, ge=0.0, le=360.0)
+    trigger_timestamp: Optional[float] = Field(None, ge=0.0)
+    gps_timestamp: Optional[float] = Field(None, ge=0.0)
+    drone_id: Optional[str] = Field(None, max_length=80)
+
+
+class GeotagExportRequest(BaseModel):
+    session: Optional[str] = Field(None, min_length=1, max_length=80)
+    records: Optional[List[GeotagRecordRequest]] = None
+    gps_time_offset_s: float = Field(0.0, ge=-86400.0, le=86400.0)
+
+
+class ExifGeotagRequest(BaseModel):
+    session: str = Field(..., min_length=1, max_length=80)
+    overwrite: bool = True
+    output_session: Optional[str] = Field(None, min_length=1, max_length=80)
+
+
+class NdviPreviewRequest(BaseModel):
+    session: Optional[str] = Field(None, min_length=1, max_length=80)
+    red_filename: Optional[str] = Field(None, min_length=1, max_length=260)
+    nir_filename: Optional[str] = Field(None, min_length=1, max_length=260)
+    red_band_index: int = Field(default=config.mapping.ndvi_red_band_index, ge=0, le=32)
+    nir_band_index: int = Field(default=config.mapping.ndvi_nir_band_index, ge=0, le=32)
+
+
+class OrthomosaicPreviewRequest(BaseModel):
+    session: Optional[str] = Field(None, min_length=1, max_length=80)
+    filenames: Optional[List[str]] = None
+    limit: int = Field(default=24, ge=1, le=200)
+    tile_scale: float = Field(default=config.mapping.orthomosaic_preview_tile_scale, gt=0.0, le=1.0)
+    columns: int = Field(default=config.mapping.orthomosaic_preview_max_columns, ge=1, le=24)
+
+
+class PointCloudScanRequest(BaseModel):
+    field_boundary: FieldBoundaryRequest
+    scan_config: Optional[Dict] = None
+
+
 class SprayApplicationRecordRequest(BaseModel):
     field_name: Optional[str] = Field(None, max_length=120)
     product_name: Optional[str] = Field(None, max_length=120)
@@ -551,6 +631,39 @@ class SprayApplicationRecordRequest(BaseModel):
     target_rate: Optional[float] = Field(None, ge=0)
     target_rate_unit: Optional[str] = Field(None, max_length=40)
     weather: Optional[Dict] = None
+    notes: Optional[str] = Field(None, max_length=1000)
+
+
+class SprayComplianceReportRequest(BaseModel):
+    operator_signature: str = Field(..., min_length=1, max_length=200)
+    signed_at: Optional[float] = Field(None, ge=0.0)
+    report_format: str = Field(default="epa", pattern="^(epa|faa)$")
+
+
+class GeofenceZoneRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    zone_type: str = Field(default="no_fly", pattern="^(no_fly|landing_zone|emergency_landing|soft_limit)$")
+    polygon: List[Dict[str, float]] = Field(default_factory=list)
+    min_altitude_m: Optional[float] = None
+    max_altitude_m: Optional[float] = None
+    active: bool = True
+    metadata: Dict = Field(default_factory=dict)
+
+
+class RemoteIDRequest(BaseModel):
+    enabled: Optional[bool] = None
+    broadcast_method: Optional[str] = Field(None, pattern="^(mavlink|none|mock)$")
+    operator_id: Optional[str] = Field(None, max_length=120)
+    serial_number: Optional[str] = Field(None, max_length=120)
+    description: Optional[str] = Field(None, max_length=200)
+    latitude: Optional[float] = Field(None, ge=-90.0, le=90.0)
+    longitude: Optional[float] = Field(None, ge=-180.0, le=180.0)
+    altitude_m: Optional[float] = None
+
+
+class WaiverRequest(BaseModel):
+    night_flight_authorized: Optional[bool] = None
+    bvlos_authorized: Optional[bool] = None
     notes: Optional[str] = Field(None, max_length=1000)
 
 
@@ -655,11 +768,23 @@ class ControlAuthority:
 class ServerAPI:
     """REST and WebSocket API Server"""
 
-    def __init__(self, connection_manager, mission_planner, payload_controller, telemetry_manager):
+    def __init__(
+        self,
+        connection_manager,
+        mission_planner,
+        payload_controller,
+        telemetry_manager,
+        safety_manager: Optional[SafetyManager] = None,
+    ):
         self.connection_manager = connection_manager
         self.mission_planner = mission_planner
         self.payload_controller = payload_controller
         self.telemetry_manager = telemetry_manager
+        self.safety_manager = safety_manager or SafetyManager(
+            config.safety,
+            connection_manager=self.connection_manager,
+            telemetry_manager=self.telemetry_manager,
+        )
         self.active_websocket_clients: Set[WebSocket] = set()
         self.active_event_websocket_clients: Set[WebSocket] = set()
         self.command_event_subscribers: Dict[str, Callable[[Dict], object]] = {}
@@ -689,6 +814,11 @@ class ServerAPI:
         self._setup_middleware()
         self._setup_routes()
         self._setup_versioned_api_aliases()
+        if getattr(self.telemetry_manager, "collector", None):
+            try:
+                self.telemetry_manager.collector.register_callback(self.safety_manager.register_telemetry_point)
+            except Exception:
+                pass
 
         if config.api.auth_enabled and not self._configured_api_key_roles():
             logger.warning("API authentication is enabled, but no API keys are configured.")
@@ -978,6 +1108,133 @@ class ServerAPI:
             "distance_sensors": status.get("distance_sensors", []),
         }
 
+    def _current_safety_snapshot(self) -> Dict:
+        snapshot = self.telemetry_manager.get_current() or {}
+        if not snapshot and hasattr(self.connection_manager, "get_vehicle_state"):
+            snapshot = self.connection_manager.get_vehicle_state() or {}
+        return snapshot
+
+    def _current_safety_evaluation(self) -> Dict:
+        if not self.safety_manager:
+            return {}
+        return self.safety_manager.evaluate_snapshot(self._current_safety_snapshot())
+
+    def _geofence_zone_from_request(self, request: GeofenceZoneRequest) -> GeofenceZone:
+        return GeofenceZone(
+            name=request.name,
+            zone_type=request.zone_type,
+            polygon=request.polygon,
+            min_altitude_m=request.min_altitude_m,
+            max_altitude_m=request.max_altitude_m,
+            active=request.active,
+            metadata=request.metadata,
+        )
+
+    def _mapping_camera_spec(self) -> CameraSpec:
+        return CameraSpec(
+            sensor_width_mm=config.mapping.camera_sensor_width_mm,
+            sensor_height_mm=config.mapping.camera_sensor_height_mm,
+            image_width_px=config.mapping.camera_image_width_px,
+            image_height_px=config.mapping.camera_image_height_px,
+            focal_length_mm=config.mapping.camera_focal_length_mm,
+        )
+
+    def _mapping_planner(self) -> MappingPlanner:
+        return MappingPlanner(self._mapping_camera_spec())
+
+    def _field_boundary_from_request(self, request: FieldBoundaryRequest):
+        from ..missions.planner import FieldBoundary, GeoPoint
+
+        vertices = [GeoPoint(vertex.latitude, vertex.longitude) for vertex in request.vertices]
+        return FieldBoundary(request.name, vertices, request.altitude)
+
+    def _resolve_photo_path(self, session: Optional[str], filename: str) -> Optional[Path]:
+        if not self.payload_controller.camera:
+            return None
+        return self.payload_controller.camera.get_photo_path(filename, session=session)
+
+    def _photo_to_geotag_record(self, photo: Dict) -> Optional[GeotagRecord]:
+        geotag = photo.get("geotag") or {}
+        location = geotag.get("location") or {}
+        latitude = location.get("latitude")
+        longitude = location.get("longitude")
+        if latitude is None or longitude is None:
+            return None
+
+        captured_at = (
+            geotag.get("captured_at")
+            or photo.get("captured_at")
+            or photo.get("camera_trigger", {}).get("triggered_at")
+            or time.time()
+        )
+        trigger_timestamp = photo.get("camera_trigger", {}).get("triggered_at")
+        return GeotagRecord(
+            filename=photo.get("filename", ""),
+            latitude=float(latitude),
+            longitude=float(longitude),
+            altitude_m=float(location.get("altitude") or 0.0),
+            captured_at=float(captured_at),
+            heading_deg=geotag.get("heading"),
+            trigger_timestamp=float(trigger_timestamp) if trigger_timestamp is not None else None,
+            gps_timestamp=float(geotag.get("captured_at")) if geotag.get("captured_at") is not None else None,
+            drone_id=photo.get("drone_id") or photo.get("session"),
+        )
+
+    def _camera_session_geotag_records(self, session: str) -> List[GeotagRecord]:
+        if not self.payload_controller.camera:
+            raise HTTPException(status_code=503, detail="Camera not available.")
+
+        manifest = self.payload_controller.camera.get_session_manifest(session)
+        if not manifest:
+            raise HTTPException(status_code=404, detail="Photo session not found.")
+
+        records: List[GeotagRecord] = []
+        for photo in manifest.get("photos", []):
+            record = self._photo_to_geotag_record(photo)
+            if record is not None:
+                records.append(record)
+        if not records:
+            raise HTTPException(status_code=404, detail="No geotagged photos found in the session.")
+        return records
+
+    def _resolve_geotag_export_records(self, request: GeotagExportRequest) -> List[GeotagRecord]:
+        if request.records:
+            return [GeotagRecord(**record.model_dump()) for record in request.records]
+        if request.session:
+            return self._camera_session_geotag_records(request.session)
+        raise HTTPException(status_code=400, detail="Provide records or a photo session.")
+
+    def _build_terrain_elevation_fn(self, terrain_samples: Optional[List[TerrainSampleRequest]], default_elevation: Optional[float] = None):
+        samples = terrain_samples or []
+        if not samples:
+            if default_elevation is None:
+                return None
+
+            def _constant_elevation(_latitude: float, _longitude: float) -> float:
+                return float(default_elevation)
+
+            return _constant_elevation
+
+        sample_points = [
+            (sample.latitude, sample.longitude, sample.elevation_m)
+            for sample in samples
+        ]
+
+        def _nearest_elevation(latitude: float, longitude: float) -> float:
+            nearest = min(
+                sample_points,
+                key=lambda sample: (sample[0] - latitude) ** 2 + (sample[1] - longitude) ** 2,
+            )
+            return float(nearest[2])
+
+        return _nearest_elevation
+
+    def _image_to_png_bytes(self, image_array) -> bytes:
+        success, encoded = cv2.imencode(".png", image_array)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to encode image preview.")
+        return encoded.tobytes()
+
     def _get_calibration_config(self) -> Dict:
         if hasattr(self.payload_controller, "get_calibration_config"):
             return self.payload_controller.get_calibration_config()
@@ -1177,6 +1434,7 @@ class ServerAPI:
             "telemetry_freshness_enabled": config.api.telemetry_freshness_enabled,
             "telemetry_last_update": getattr(self.telemetry_manager, "last_update", 0),
             "telemetry_stale_seconds": config.api.telemetry_stale_seconds,
+            "safety_status": self.safety_manager.get_status() if self.safety_manager else {},
         }
         last_update = checks["telemetry_last_update"]
         checks["telemetry_age_seconds"] = time.time() - last_update if last_update else None
@@ -1189,6 +1447,7 @@ class ServerAPI:
         blocking_reasons.extend(self._get_camera_blockers(checks))
         blocking_reasons.extend(self._get_payload_readiness_blockers(checks))
         blocking_reasons.extend(self._get_system_blockers(checks))
+        blocking_reasons.extend(self._get_companion_safety_blockers(checks))
         telemetry_age = checks.get("telemetry_age_seconds")
         if (
             config.api.telemetry_freshness_enabled
@@ -1279,6 +1538,17 @@ class ServerAPI:
             blocking_reasons.append("API auth is enabled but API_KEY is not configured.")
         return blocking_reasons
 
+    def _get_companion_safety_blockers(self, checks: Dict) -> List[str]:
+        if not self.safety_manager:
+            return []
+
+        blockers = []
+        evaluation = self.safety_manager.evaluate_snapshot(self._current_safety_snapshot())
+        blockers.extend(evaluation.get("blockers", []))
+        if evaluation.get("recommended_action") in {"rtl", "land"}:
+            blockers.append(f"Companion safety manager recommends {evaluation['recommended_action'].upper()}.")
+        return blockers
+
     def _get_safety_blockers(self, command: str) -> List[str]:
         if not config.api.safety_gates_enabled:
             return []
@@ -1295,6 +1565,16 @@ class ServerAPI:
 
         if command == "payload.spray_start":
             blockers.extend(self._get_payload_readiness_blockers(checks))
+
+        if self.safety_manager:
+            evaluation = self.safety_manager.evaluate_snapshot(self._current_safety_snapshot())
+            blockers.extend(evaluation.get("blockers", []))
+            if command in {"vehicle.arm", "vehicle.takeoff", "vehicle.goto", "mission.start", "payload.spray_start"}:
+                recommended_action = evaluation.get("recommended_action")
+                if recommended_action in {"rtl", "land", "loiter"}:
+                    blockers.append(
+                        f"Companion safety manager recommends {recommended_action.upper()} before {command}."
+                    )
 
         return blockers
 
@@ -1661,6 +1941,30 @@ class ServerAPI:
                         "update_interval": config.telemetry.update_interval,
                         "history_size": config.telemetry.history_size,
                         "gps_timeout": config.telemetry.gps_timeout,
+                    },
+                    "mapping": {
+                        "survey_front_overlap": config.mapping.survey_front_overlap,
+                        "survey_side_overlap": config.mapping.survey_side_overlap,
+                        "survey_target_gsd_cm": config.mapping.survey_target_gsd_cm,
+                        "survey_default_altitude_m": config.mapping.survey_default_altitude_m,
+                        "survey_default_heading_deg": config.mapping.survey_default_heading_deg,
+                        "survey_flight_speed_mps": config.mapping.survey_flight_speed_mps,
+                        "survey_terrain_aware": config.mapping.survey_terrain_aware,
+                        "survey_terrain_clearance_m": config.mapping.survey_terrain_clearance_m,
+                        "survey_border_margin_m": config.mapping.survey_border_margin_m,
+                        "camera_sensor_width_mm": config.mapping.camera_sensor_width_mm,
+                        "camera_sensor_height_mm": config.mapping.camera_sensor_height_mm,
+                        "camera_image_width_px": config.mapping.camera_image_width_px,
+                        "camera_image_height_px": config.mapping.camera_image_height_px,
+                        "camera_focal_length_mm": config.mapping.camera_focal_length_mm,
+                        "ndvi_enabled": config.mapping.ndvi_enabled,
+                        "ndvi_red_band_index": config.mapping.ndvi_red_band_index,
+                        "ndvi_nir_band_index": config.mapping.ndvi_nir_band_index,
+                        "orthomosaic_preview_max_columns": config.mapping.orthomosaic_preview_max_columns,
+                        "orthomosaic_preview_tile_scale": config.mapping.orthomosaic_preview_tile_scale,
+                        "lidar_enabled": config.mapping.lidar_enabled,
+                        "lidar_topic": config.mapping.lidar_topic,
+                        "lidar_frame_id": config.mapping.lidar_frame_id,
                     },
                 },
             )
@@ -2320,6 +2624,210 @@ class ServerAPI:
                 self._audit_http_error(action, {}, e)
                 raise
 
+        @self.app.get(
+            "/api/safety/status",
+            response_model=StatusResponse,
+            tags=["Safety"],
+            dependencies=protected,
+        )
+        async def get_safety_status():
+            return StatusResponse(
+                status="success",
+                message="Safety status retrieved",
+                data=self.safety_manager.get_status() if self.safety_manager else {},
+            )
+
+        @self.app.get(
+            "/api/safety/checklist",
+            response_model=StatusResponse,
+            tags=["Safety"],
+            dependencies=protected,
+        )
+        async def get_preflight_checklist():
+            checklist = self.safety_manager.get_preflight_checklist(self._current_safety_snapshot()) if self.safety_manager else {}
+            return StatusResponse(
+                status="success",
+                message="Preflight checklist retrieved",
+                data=checklist,
+            )
+
+        @self.app.get(
+            "/api/safety/geofences",
+            response_model=StatusResponse,
+            tags=["Safety"],
+            dependencies=protected,
+        )
+        async def list_geofences():
+            return StatusResponse(
+                status="success",
+                message="Geofences retrieved",
+                data={"zones": self.safety_manager.list_zones() if self.safety_manager else []},
+            )
+
+        @self.app.post(
+            "/api/safety/geofences",
+            response_model=StatusResponse,
+            tags=["Safety"],
+            dependencies=protected,
+        )
+        async def add_geofence(zone: GeofenceZoneRequest, x_control_token: Optional[str] = Header(None)):
+            action = "safety.geofence_create"
+            parameters = zone.model_dump()
+            try:
+                self._require_command_authority(x_control_token)
+                saved = self.safety_manager.upsert_zone(self._geofence_zone_from_request(zone)) if self.safety_manager else zone.model_dump()
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(status="success", message="Geofence saved", data=saved)
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.delete(
+            "/api/safety/geofences/{name}",
+            response_model=StatusResponse,
+            tags=["Safety"],
+            dependencies=protected,
+        )
+        async def remove_geofence(name: str, x_control_token: Optional[str] = Header(None)):
+            action = "safety.geofence_delete"
+            parameters = {"name": name}
+            try:
+                self._require_command_authority(x_control_token)
+                removed = self.safety_manager.delete_zone(name) if self.safety_manager else False
+                if not removed:
+                    raise HTTPException(status_code=404, detail="Geofence not found.")
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(status="success", message="Geofence removed", data={"removed": True})
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/safety/emergency-landing-zones",
+            response_model=StatusResponse,
+            tags=["Safety"],
+            dependencies=protected,
+        )
+        async def get_emergency_landing_zones():
+            snapshot = self._current_safety_snapshot()
+            latitude = (snapshot.get("location") or {}).get("latitude")
+            longitude = (snapshot.get("location") or {}).get("longitude")
+            landing_zone = self.safety_manager.identify_emergency_landing_zone(latitude, longitude) if self.safety_manager else None
+            return StatusResponse(
+                status="success",
+                message="Emergency landing zone retrieved",
+                data={"landing_zone": landing_zone.to_dict() if landing_zone else None},
+            )
+
+        @self.app.get(
+            "/api/compliance/remote-id",
+            response_model=StatusResponse,
+            tags=["Compliance"],
+            dependencies=protected,
+        )
+        async def get_remote_id():
+            return StatusResponse(
+                status="success",
+                message="Remote ID configuration retrieved",
+                data=self.safety_manager.get_remote_id() if self.safety_manager else {},
+            )
+
+        @self.app.put(
+            "/api/compliance/remote-id",
+            response_model=StatusResponse,
+            tags=["Compliance"],
+            dependencies=protected,
+        )
+        async def update_remote_id(request: RemoteIDRequest, x_control_token: Optional[str] = Header(None)):
+            action = "compliance.remote_id_update"
+            parameters = request.model_dump(exclude_none=True)
+            try:
+                self._require_command_authority(x_control_token)
+                updated = self.safety_manager.update_remote_id(parameters) if self.safety_manager else parameters
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(status="success", message="Remote ID configuration updated", data=updated)
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/compliance/waivers",
+            response_model=StatusResponse,
+            tags=["Compliance"],
+            dependencies=protected,
+        )
+        async def get_waivers():
+            return StatusResponse(
+                status="success",
+                message="Waiver configuration retrieved",
+                data=self.safety_manager.get_waivers() if self.safety_manager else {},
+            )
+
+        @self.app.put(
+            "/api/compliance/waivers",
+            response_model=StatusResponse,
+            tags=["Compliance"],
+            dependencies=protected,
+        )
+        async def update_waivers(request: WaiverRequest, x_control_token: Optional[str] = Header(None)):
+            action = "compliance.waiver_update"
+            parameters = request.model_dump(exclude_none=True)
+            try:
+                self._require_command_authority(x_control_token)
+                updated = self.safety_manager.update_waivers(parameters) if self.safety_manager else parameters
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(status="success", message="Waiver configuration updated", data=updated)
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/arming/checks",
+            response_model=StatusResponse,
+            tags=["Arming"],
+            dependencies=protected,
+        )
+        async def get_arming_checks():
+            return StatusResponse(
+                status="success",
+                message="Arming checks retrieved",
+                data={
+                    "prearm": self.connection_manager.get_prearm_status(),
+                    "safety": self.safety_manager.get_preflight_checklist(self._current_safety_snapshot()) if self.safety_manager else {},
+                    "companion_safety": self.safety_manager.get_status() if self.safety_manager else {},
+                },
+            )
+
+        @self.app.post(
+            "/api/arming/motor-test",
+            response_model=StatusResponse,
+            tags=["Arming"],
+            dependencies=protected,
+        )
+        async def motor_test(request: Optional[Dict] = None, x_control_token: Optional[str] = Header(None)):
+            action = "arming.motor_test"
+            parameters = request or {}
+            try:
+                self._require_command_authority(x_control_token)
+                checklist = {
+                    "procedure": [
+                        "Confirm propellers are removed or aircraft is secured.",
+                        "Verify safety switch state and Remote ID status.",
+                        "Perform short motor spin test only in a controlled environment.",
+                    ],
+                    "duration_seconds": config.safety.motor_test_duration_seconds,
+                    "esc_calibration": "Follow airframe manufacturer instructions before enabling motors.",
+                }
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(
+                    status="success",
+                    message="Motor test and ESC calibration procedure prepared",
+                    data=checklist,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
         @self.app.post(
             "/api/emergency/hold",
             response_model=StatusResponse,
@@ -2680,6 +3188,299 @@ class ServerAPI:
                 raise
 
         @self.app.post(
+            "/api/mapping/survey-grid",
+            response_model=StatusResponse,
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def generate_survey_grid(request: SurveyGridPlanRequest, x_control_token: Optional[str] = Header(None)):
+            action = "mapping.survey_grid"
+            parameters = request.model_dump(exclude_none=True)
+            try:
+                self._require_command_authority(x_control_token)
+                boundary = self._field_boundary_from_request(request.field_boundary)
+                survey_config = dict(request.survey_config or {})
+                if "altitude_agl_m" not in survey_config:
+                    survey_config["altitude_agl_m"] = config.mapping.survey_default_altitude_m
+                if "front_overlap" not in survey_config:
+                    survey_config["front_overlap"] = config.mapping.survey_front_overlap
+                if "side_overlap" not in survey_config:
+                    survey_config["side_overlap"] = config.mapping.survey_side_overlap
+                if "target_gsd_cm" not in survey_config:
+                    survey_config["target_gsd_cm"] = config.mapping.survey_target_gsd_cm
+                if "flight_speed_mps" not in survey_config:
+                    survey_config["flight_speed_mps"] = config.mapping.survey_flight_speed_mps
+                if "line_heading_deg" not in survey_config:
+                    survey_config["line_heading_deg"] = config.mapping.survey_default_heading_deg
+                if "terrain_aware" not in survey_config:
+                    survey_config["terrain_aware"] = config.mapping.survey_terrain_aware
+                if "terrain_clearance_m" not in survey_config:
+                    survey_config["terrain_clearance_m"] = config.mapping.survey_terrain_clearance_m
+                if "border_margin_m" not in survey_config:
+                    survey_config["border_margin_m"] = config.mapping.survey_border_margin_m
+
+                terrain_fn = self._build_terrain_elevation_fn(
+                    request.terrain_samples,
+                    default_elevation=boundary.altitude,
+                )
+                plan = self._mapping_planner().generate_survey_grid(
+                    boundary,
+                    SurveyGridConfig(**survey_config),
+                    terrain_elevation_fn=terrain_fn,
+                )
+                self._audit_command(action, "success", parameters=parameters)
+                return StatusResponse(
+                    status="success",
+                    message="Survey grid generated",
+                    data=plan.to_dict(),
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/mapping/geotag/export",
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def export_geotag_csv(request: GeotagExportRequest, x_control_token: Optional[str] = Header(None)):
+            action = "mapping.geotag_export"
+            parameters = request.model_dump(exclude_none=True)
+            try:
+                self._require_command_authority(x_control_token)
+                records = self._resolve_geotag_export_records(request)
+                synchronized = self._mapping_planner().synchronize_capture_timestamps(
+                    records,
+                    gps_time_offset_s=request.gps_time_offset_s,
+                )
+                buffer = io.StringIO()
+                writer = csv.DictWriter(
+                    buffer,
+                    fieldnames=[
+                        "filename",
+                        "latitude",
+                        "longitude",
+                        "altitude_m",
+                        "captured_at_utc",
+                        "heading_deg",
+                        "trigger_timestamp",
+                        "gps_timestamp",
+                        "drone_id",
+                    ],
+                )
+                writer.writeheader()
+                for record in synchronized:
+                    writer.writerow(record.to_csv_row())
+
+                content = buffer.getvalue()
+                self._audit_command(action, "success", parameters=parameters, details={"record_count": len(synchronized)})
+                return Response(
+                    content=content,
+                    media_type="text/csv",
+                    headers={"content-disposition": 'attachment; filename="geotags.csv"'},
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/mapping/geotag/exif",
+            response_model=StatusResponse,
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def geotag_session_images(request: ExifGeotagRequest, x_control_token: Optional[str] = Header(None)):
+            action = "mapping.geotag_exif"
+            parameters = request.model_dump()
+            if not self.payload_controller.camera:
+                error = HTTPException(status_code=503, detail="Camera not available.")
+                self._audit_http_error(action, parameters, error)
+                raise error
+
+            try:
+                self._require_command_authority(x_control_token)
+                records = self._camera_session_geotag_records(request.session)
+                tagged = []
+                skipped = []
+                output_session = request.output_session or (f"{request.session}_geotagged" if not request.overwrite else request.session)
+                for photo_record in records:
+                    source_path = self._resolve_photo_path(request.session, photo_record.filename)
+                    if not source_path:
+                        skipped.append(photo_record.filename)
+                        continue
+
+                    target_path = source_path
+                    if not request.overwrite:
+                        target_path = Path(self.payload_controller.camera.photo_directory) / output_session / source_path.name
+                    self._mapping_planner().write_geotagged_image(source_path, photo_record, target_path)
+                    tagged.append(str(target_path))
+
+                self._audit_command(
+                    action,
+                    "success",
+                    parameters=parameters,
+                    details={"tagged_count": len(tagged), "skipped_count": len(skipped)},
+                )
+                return StatusResponse(
+                    status="success",
+                    message="EXIF geotagging completed",
+                    data={
+                        "session": request.session,
+                        "overwrite": request.overwrite,
+                        "output_session": output_session if not request.overwrite else request.session,
+                        "tagged_count": len(tagged),
+                        "skipped_count": len(skipped),
+                        "tagged_files": tagged,
+                        "skipped_files": skipped,
+                    },
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/mapping/ndvi/preview",
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def build_ndvi_preview(request: NdviPreviewRequest, x_control_token: Optional[str] = Header(None)):
+            action = "mapping.ndvi_preview"
+            parameters = request.model_dump(exclude_none=True)
+            try:
+                self._require_command_authority(x_control_token)
+                if not self.payload_controller.camera:
+                    raise HTTPException(status_code=503, detail="Camera not available.")
+                if not request.session and (not request.red_filename or not request.nir_filename):
+                    raise HTTPException(status_code=400, detail="Provide a session or red/nir filenames.")
+
+                if request.session:
+                    red_filename = request.red_filename or "red.jpg"
+                    nir_filename = request.nir_filename or "nir.jpg"
+                    red_path = self._resolve_photo_path(request.session, red_filename)
+                    nir_path = self._resolve_photo_path(request.session, nir_filename)
+                else:
+                    red_path = self._resolve_photo_path(None, request.red_filename or "")
+                    nir_path = self._resolve_photo_path(None, request.nir_filename or "")
+
+                if not red_path or not nir_path:
+                    raise HTTPException(status_code=404, detail="Red or NIR image not found.")
+
+                red_image = cv2.imread(str(red_path), cv2.IMREAD_UNCHANGED)
+                nir_image = cv2.imread(str(nir_path), cv2.IMREAD_UNCHANGED)
+                if red_image is None or nir_image is None:
+                    raise HTTPException(status_code=400, detail="Failed to load one or more NDVI source images.")
+
+                def _select_band(image, band_index: int):
+                    if image.ndim == 2:
+                        return image
+                    if band_index >= image.shape[2]:
+                        raise HTTPException(status_code=400, detail="Band index is out of range for the selected image.")
+                    return image[..., band_index]
+
+                red_band = _select_band(red_image, request.red_band_index)
+                nir_band = _select_band(nir_image, request.nir_band_index)
+                if red_band.shape != nir_band.shape:
+                    nir_band = cv2.resize(
+                        nir_band,
+                        (red_band.shape[1], red_band.shape[0]),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                ndvi = self._mapping_planner().calculate_ndvi(red_band, nir_band)
+                preview = self._mapping_planner().ndvi_false_color(ndvi)
+                self._audit_command(action, "success", parameters=parameters)
+                return Response(
+                    content=self._image_to_png_bytes(preview),
+                    media_type="image/png",
+                    headers={"content-disposition": 'inline; filename="ndvi-preview.png"'},
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/mapping/orthomosaic/preview",
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def build_orthomosaic_preview(request: OrthomosaicPreviewRequest, x_control_token: Optional[str] = Header(None)):
+            action = "mapping.orthomosaic_preview"
+            parameters = request.model_dump(exclude_none=True)
+            try:
+                self._require_command_authority(x_control_token)
+                if not self.payload_controller.camera:
+                    raise HTTPException(status_code=503, detail="Camera not available.")
+
+                if request.filenames:
+                    filenames = request.filenames
+                elif request.session:
+                    photos = self.payload_controller.camera.get_recent_photos(request.limit, session=request.session)
+                    filenames = [photo["filename"] for photo in photos]
+                else:
+                    raise HTTPException(status_code=400, detail="Provide a session or filenames.")
+
+                image_paths = []
+                for filename in filenames[: request.limit]:
+                    if request.session:
+                        photo_path = self._resolve_photo_path(request.session, filename)
+                    else:
+                        photo_path = self._resolve_photo_path(None, filename)
+                    if photo_path:
+                        image_paths.append(photo_path)
+
+                if not image_paths:
+                    raise HTTPException(status_code=404, detail="No preview images were found.")
+
+                mosaic = self._mapping_planner().build_preview_mosaic(
+                    image_paths,
+                    tile_scale=request.tile_scale,
+                    columns=request.columns,
+                )
+                self._audit_command(action, "success", parameters=parameters, details={"tile_count": mosaic.tile_count})
+                return Response(
+                    content=self._image_to_png_bytes(mosaic.image),
+                    media_type="image/png",
+                    headers={"content-disposition": 'inline; filename="orthomosaic-preview.png"'},
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/mapping/point-cloud/scan",
+            response_model=StatusResponse,
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def generate_point_cloud_scan(request: PointCloudScanRequest, x_control_token: Optional[str] = Header(None)):
+            action = "mapping.point_cloud_scan"
+            parameters = request.model_dump(exclude_none=True)
+            try:
+                self._require_command_authority(x_control_token)
+                boundary = self._field_boundary_from_request(request.field_boundary)
+                scan_config = PointCloudScanConfig(**(request.scan_config or {}))
+                points = self._mapping_planner().generate_point_cloud_scan(boundary, scan_config)
+                self._audit_command(action, "success", parameters=parameters, details={"point_count": len(points)})
+                return StatusResponse(
+                    status="success",
+                    message="Point cloud scan generated",
+                    data={
+                        "field_boundary": request.field_boundary.model_dump(),
+                        "scan_config": {
+                            "enabled": scan_config.enabled,
+                            "altitude_levels_m": list(scan_config.altitude_levels_m),
+                            "orbit_radius_m": scan_config.orbit_radius_m,
+                            "perimeter_margin_m": scan_config.perimeter_margin_m,
+                            "grid_spacing_m": scan_config.grid_spacing_m,
+                            "include_center_pass": scan_config.include_center_pass,
+                        },
+                        "points": [point.to_dict() for point in points],
+                    },
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
             "/api/payload/control",
             response_model=StatusResponse,
             tags=["Payload"],
@@ -2886,9 +3687,25 @@ class ServerAPI:
             parameters = {"session": session, **request.model_dump()}
             try:
                 self._require_command_authority(x_control_token)
+                metadata = request.model_dump(exclude_none=True)
+                if request.field_name:
+                    boundary = self.mission_planner.field_boundaries.get(request.field_name)
+                    if boundary:
+                        metadata["field_boundary"] = {
+                            "name": boundary.name,
+                            "altitude": boundary.altitude,
+                            "vertices": [
+                                {
+                                    "latitude": vertex.latitude,
+                                    "longitude": vertex.longitude,
+                                    "altitude": getattr(vertex, "altitude", boundary.altitude),
+                                }
+                                for vertex in boundary.vertices
+                            ],
+                        }
                 record = self.payload_controller.create_application_record(
                     session,
-                    metadata=request.model_dump(exclude_none=True),
+                    metadata=metadata,
                 )
                 if not record:
                     raise HTTPException(status_code=404, detail="Spray session not found.")
@@ -2901,6 +3718,54 @@ class ServerAPI:
             except HTTPException as e:
                 self._audit_http_error(action, parameters, e)
                 raise
+
+        @self.app.get(
+            "/api/payload/spray/sessions/{session}/geojson",
+            response_model=StatusResponse,
+            tags=["Payload"],
+            dependencies=protected,
+        )
+        async def export_spray_geojson(session: str):
+            telemetry_history = self.telemetry_manager.get_history()
+            geojson = self.payload_controller.application_records.export_geojson(
+                session,
+                telemetry_history=telemetry_history,
+            )
+            if not geojson:
+                raise HTTPException(status_code=404, detail="Spray application record not found.")
+
+            return StatusResponse(
+                status="success",
+                message="Spray GeoJSON exported",
+                data=geojson,
+            )
+
+        @self.app.post(
+            "/api/payload/spray/sessions/{session}/compliance-report",
+            response_model=StatusResponse,
+            tags=["Payload"],
+            dependencies=protected,
+        )
+        async def generate_spray_compliance_report(
+            session: str,
+            request: SprayComplianceReportRequest,
+        ):
+            telemetry_history = self.telemetry_manager.get_history()
+            report = self.payload_controller.application_records.generate_compliance_report(
+                session,
+                operator_signature=request.operator_signature,
+                signed_at=request.signed_at,
+                report_format=request.report_format,
+                telemetry_history=telemetry_history,
+            )
+            if not report:
+                raise HTTPException(status_code=404, detail="Spray application record not found.")
+
+            return StatusResponse(
+                status="success",
+                message="Spray compliance report generated",
+                data=report,
+            )
 
         @self.app.post(
             "/api/payload/camera/sessions/{session}/photos",

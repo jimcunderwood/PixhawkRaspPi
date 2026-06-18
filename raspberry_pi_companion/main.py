@@ -4,6 +4,7 @@ Initializes and runs the Raspberry Pi companion software
 """
 
 import logging
+from pathlib import Path
 from typing import Optional
 import uvicorn
 
@@ -13,8 +14,11 @@ from src.missions.planner import (
     NavigationConfig,
     MissionPlanner,
 )
+from src.logsync.manager import FlightLogSyncManager
 from src.payloads.controller import PayloadController
+from src.safety.manager import SafetyManager
 from src.telemetry.collector import TelemetryManager
+from src.telemetry.database import TelemetryDatabase, TelemetryDatabaseConfig
 from src.api.server import ServerAPI
 
 # Configure logging
@@ -80,6 +84,9 @@ class CompanionComputer:
         self.mission_planner: Optional[MissionPlanner] = None
         self.payload_controller: Optional[PayloadController] = None
         self.telemetry_manager: Optional[TelemetryManager] = None
+        self.telemetry_database: Optional[TelemetryDatabase] = None
+        self.safety_manager: Optional[SafetyManager] = None
+        self.flight_log_sync_manager: Optional[FlightLogSyncManager] = None
         self.api_server: Optional[ServerAPI] = None
         self._running = False
 
@@ -111,12 +118,36 @@ class CompanionComputer:
 
             # Initialize telemetry manager
             logger.info("Initializing telemetry system...")
+            self.telemetry_database = TelemetryDatabase(
+                TelemetryDatabaseConfig(
+                    path=Path(config.storage.telemetry_database_file),
+                    max_bytes=config.storage.telemetry_database_max_bytes,
+                    backup_count=config.storage.telemetry_database_backup_count,
+                    vacuum_interval_seconds=config.storage.telemetry_database_vacuum_interval_seconds,
+                )
+            )
             self.telemetry_manager = TelemetryManager(
                 max_history=config.telemetry.history_size,
-                update_interval=config.telemetry.update_interval
+                update_interval=config.telemetry.update_interval,
+                database=self.telemetry_database,
             )
             self.telemetry_manager.initialize(
-                self.connection_manager.get_vehicle_state
+                self.connection_manager.get_vehicle_state,
+                payload_getter=self.payload_controller.get_payload_status if self.payload_controller else None,
+            )
+
+            self.safety_manager = SafetyManager(
+                config.safety,
+                connection_manager=self.connection_manager,
+                telemetry_manager=self.telemetry_manager,
+            )
+
+            logger.info("Initializing flight log sync...")
+            self.flight_log_sync_manager = FlightLogSyncManager(
+                self.connection_manager,
+                self.payload_controller,
+                self.telemetry_manager,
+                config.storage,
             )
 
             # Initialize API server
@@ -125,7 +156,8 @@ class CompanionComputer:
                 self.connection_manager,
                 self.mission_planner,
                 self.payload_controller,
-                self.telemetry_manager
+                self.telemetry_manager,
+                safety_manager=self.safety_manager,
             )
 
             logger.info("✓ Initialization complete")
@@ -174,6 +206,12 @@ class CompanionComputer:
                 self.telemetry_manager.stop()
         except Exception as e:
             logger.error(f"Error stopping telemetry: {str(e)}")
+
+        try:
+            if self.telemetry_database:
+                self.telemetry_database.close()
+        except Exception as e:
+            logger.error(f"Error closing telemetry database: {str(e)}")
 
         try:
             if self.payload_controller:

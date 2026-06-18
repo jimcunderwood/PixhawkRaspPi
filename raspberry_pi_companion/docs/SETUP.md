@@ -91,6 +91,9 @@ cat /dev/serial0  # Should show telemetry data from Pixhawk
 
 ### 1. Install Dependencies
 
+The setup script installs both Python dependencies and the `ripgrep` system
+tool used for fast repository searches.
+
 ```bash
 cd ~/PixhawkRaspPi/raspberry_pi_companion
 chmod +x setup.sh

@@ -839,3 +839,36 @@ class MissionPlanner:
             'is_executing': self.is_executing,
             'current_mission_index': self.current_mission_index,
         }
+
+    # Mapping helpers
+
+    def add_survey_grid(
+        self,
+        field_boundary: FieldBoundary,
+        camera_spec: dict,
+        survey_config: dict,
+        terrain_elevation_fn=None,
+    ) -> Dict:
+        """
+        Generate a photogrammetry survey grid and append it to the mission.
+
+        The heavy lifting lives in ``src.mapping.planner`` so mapping support can
+        evolve independently from the spray workflow.
+        """
+        from src.mapping.planner import CameraSpec, MappingPlanner, SurveyGridConfig
+
+        planner = MappingPlanner(CameraSpec(**camera_spec))
+        grid = planner.generate_survey_grid(
+            field_boundary,
+            SurveyGridConfig(**survey_config),
+            terrain_elevation_fn=terrain_elevation_fn,
+        )
+
+        for waypoint in grid.waypoints:
+            self.add_waypoint(
+                waypoint.location.latitude,
+                waypoint.location.longitude,
+                waypoint.location.altitude,
+            )
+
+        return grid.to_dict()

@@ -5,10 +5,13 @@ Python application for Raspberry Pi 4 connected to Pixhawk 4 flight controller.
 ## Features
 
 - **MAVLink Communication**: Full MAVLink v2 protocol support for drone control
-- **Mission Planning**: Waypoint-based missions with field boundaries
+- **Mission Planning**: Waypoint-based missions with field boundaries and survey grids
 - **Live Telemetry**: Real-time vehicle state, GPS, battery, and attitude data
+- **Telemetry Archiving**: SQLite time-series storage with automatic rotation and compact history queries
 - **Navigation Safety**: Configurable obstacle avoidance and terrain-following support
+- **Companion Safety**: Altitude geofencing, no-fly zones, emergency landing zones, and progressive failsafes
 - **Payload Control**: Spray pump, camera (photo/video), flow sensor
+- **Mapping**: Photogrammetry, EXIF geotagging, NDVI, orthomosaic previews, point-cloud scan planning
 - **REST API**: Complete RESTful interface for ground station integration
 - **WebSocket Streaming**: Live telemetry streaming to multiple clients
 - **Multi-transport**: Supports Serial, UDP, and TCP MAVLink connections
@@ -51,9 +54,22 @@ Key configuration options:
 - `OBSTACLE_AVOIDANCE_*`: ArduPilot avoidance defaults plus live sensor source
 - `OBSTACLE_AVOIDANCE_SENSOR_*`: Obstacle sensor source, 360-mode, Pixhawk ID, GPIO, and ROS hooks
 - `TERRAIN_*`: Terrain following source, AGL limits, waypoint/RTL behavior, and ROS/MAVROS hooks
+- `SURVEY_*`: Photogrammetry overlap, altitude, heading, and terrain-adjustment defaults
+- `CAMERA_*`: Camera sensor geometry used for GSD and trigger timing calculations
+- `NDVI_*`: Band selection and feature toggles for vegetation monitoring
 - `AUDIT_LOG_FILE`: JSONL audit log path, usually under `/var/lib/drone-companion/audit/`
 - `AUDIT_LOG_MAX_BYTES`: Rotate the audit log once it reaches this many bytes
 - `AUDIT_LOG_BACKUP_COUNT`: How many rotated audit files to keep
+- `TELEMETRY_DATABASE_FILE`: SQLite database for telemetry history, usually under `/var/lib/drone-companion/telemetry/`
+- `TELEMETRY_DATABASE_MAX_BYTES`: Rotate telemetry storage when the database exceeds this many bytes
+- `FLIGHT_LOG_DIRECTORY`: Post-flight Pixhawk and companion log archive directory
+- `FLIGHT_LOG_CLOUD_UPLOAD_ENABLED`: Enable HTTP upload of the post-flight archive bundle
+- `FLIGHT_LOG_CLOUD_UPLOAD_URL`: Upload endpoint for the archive bundle
+- `SAFETY_STATE_FILE`: Companion-side geofence, Remote ID, and waiver state
+- `ALTITUDE_HARD_*` and `ALTITUDE_SOFT_*`: Companion-enforced altitude limits
+- `LOW_BATTERY_*` / `GPS_LOSS_*` / `LOST_LINK_*`: Progressive emergency thresholds
+- `REMOTE_ID_*`: Remote ID broadcast metadata surfaced in the API
+- `PART107_*`: Night flight and BVLOS waiver metadata
 - `CAMERA_TRIGGER_PULSE_MS`: Camera trigger pulse duration in milliseconds; fractional values are allowed
 - `LOG_LEVEL`: Logging verbosity (INFO, DEBUG, WARNING, ERROR)
 
@@ -131,12 +147,48 @@ POST /api/v1/field-boundaries         - Add field boundary polygon
 GET  /api/v1/field-boundaries         - Get all field boundaries
 ```
 
+Mapping workflows build on the same mission boundaries:
+
+- Survey grids use camera sensor geometry, front/side overlap, and flight speed to derive spacing and trigger timing.
+- Target GSD can be converted into an optimal altitude above ground level.
+- Terrain-aware surveys can adjust waypoint altitude per position when terrain data is available.
+- Geotagged captures can be exported to CSV or written into EXIF GPS tags for photogrammetry tools.
+- NDVI support expects a camera or filter setup with usable red and NIR bands.
+- Orthomosaic previews are intended as low-resolution in-flight mosaics before full-resolution cloud processing.
+- Point-cloud workflows can reuse the same field boundary while adding orbit or tiered scan passes.
+
+### Mapping
+```
+POST /api/v1/mapping/survey-grid         - Generate a photogrammetry survey plan
+POST /api/v1/mapping/geotag/export       - Export geotag CSV from supplied records or a photo session
+POST /api/v1/mapping/geotag/exif         - Write EXIF GPS tags into session images
+POST /api/v1/mapping/ndvi/preview        - Generate an NDVI false-color preview PNG
+POST /api/v1/mapping/orthomosaic/preview - Generate a low-res orthomosaic preview PNG
+POST /api/v1/mapping/point-cloud/scan    - Generate a 3D scan waypoint plan
+```
+
 ### Navigation Safety
 ```
 GET  /api/v1/navigation/config        - Get avoidance/terrain config and Pixhawk status
 POST /api/v1/navigation/config        - Update companion navigation config
 POST /api/v1/navigation/apply         - Apply saved navigation config to Pixhawk params
 GET  /api/v1/navigation/sensors       - Get live obstacle/terrain sensor data
+```
+
+### Safety and Compliance
+```
+GET    /api/safety/status                 - Companion safety evaluation and geofence state
+GET    /api/safety/checklist              - Preflight safety checklist
+GET    /api/safety/geofences              - List geofence/no-fly/landing zones
+POST   /api/safety/geofences              - Add or update a geofence zone
+DELETE /api/safety/geofences/{name}       - Remove a geofence zone
+GET    /api/safety/emergency-landing-zones - Identify the best landing zone
+GET    /api/compliance/remote-id          - Get Remote ID configuration
+PUT    /api/compliance/remote-id          - Update Remote ID configuration
+GET    /api/compliance/waivers            - Get Part 107 waiver metadata
+PUT    /api/compliance/waivers            - Update waiver metadata
+GET    /api/arming/checks                 - Pre-arm plus companion safety checks
+POST   /api/arming/motor-test             - Prepare motor test / ESC calibration procedure
 ```
 
 When terrain following is enabled, new mission waypoints default to the
@@ -191,6 +243,15 @@ GET  /api/v1/telemetry/current        - Current vehicle state
 GET  /api/v1/telemetry/history        - Telemetry history
 GET  /api/v1/telemetry/stats          - Statistics
 WS   /ws/telemetry                 - WebSocket live stream
+```
+
+Telemetry history is now backed by SQLite instead of an in-memory ring buffer,
+which makes long-range analysis and post-flight review much easier.
+
+### Spray Records
+```
+GET  /api/payload/spray/sessions/{session}/geojson            - Export field boundary and flight path as GeoJSON
+POST /api/payload/spray/sessions/{session}/compliance-report  - Generate a signed compliance report
 ```
 
 ## Systemd Service

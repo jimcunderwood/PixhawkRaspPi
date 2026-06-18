@@ -6,11 +6,13 @@ Manages spray pump, camera, and other auxiliary systems
 import logging
 import json
 import os
+import math
 from pathlib import Path
 import re
 import shutil
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional
 from enum import Enum
 from abc import ABC, abstractmethod
@@ -650,6 +652,268 @@ class SprayApplicationRecordStore:
                 logger.error(f"Failed to read application record {record_path}: {str(e)}")
         records.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or 0, reverse=True)
         return records
+
+    def export_geojson(
+        self,
+        session: str,
+        telemetry_history: Optional[List[Dict]] = None,
+    ) -> Optional[Dict]:
+        record = self.get_record(session)
+        if not record:
+            return None
+
+        features = []
+        boundary = self._extract_boundary(record)
+        if boundary:
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [boundary],
+                    },
+                    "properties": {
+                        "feature_type": "field_boundary",
+                        "session": session,
+                        "field_name": self._field_name(record),
+                    },
+                }
+            )
+
+        flight_path = self._flight_path(record, telemetry_history)
+        if flight_path:
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": flight_path,
+                    },
+                    "properties": {
+                        "feature_type": "flight_path",
+                        "session": session,
+                        "started_at": record.get("started_at"),
+                        "stopped_at": record.get("stopped_at"),
+                        "total_volume_liters": record.get("total_volume_liters"),
+                    },
+                }
+            )
+
+        summary_point = self._summary_point(record, telemetry_history)
+        if summary_point:
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": summary_point,
+                    },
+                    "properties": {
+                        "feature_type": "application_summary",
+                        "session": session,
+                        "application_rate_liters_per_hectare": self._application_rate(record),
+                        "operator_name": self._operator_name(record),
+                        "product_name": record.get("metadata", {}).get("product_name"),
+                    },
+                }
+            )
+
+        return {
+            "type": "FeatureCollection",
+            "features": features,
+            "properties": {
+                "session": session,
+                "record": record,
+                "generated_at": time.time(),
+                "generated_at_iso": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
+        }
+
+    def generate_compliance_report(
+        self,
+        session: str,
+        operator_signature: str,
+        signed_at: Optional[float] = None,
+        report_format: str = "epa",
+        telemetry_history: Optional[List[Dict]] = None,
+    ) -> Optional[Dict]:
+        record = self.get_record(session)
+        if not record:
+            return None
+
+        signed_at = signed_at or time.time()
+        geojson = self.export_geojson(session, telemetry_history=telemetry_history)
+        report = {
+            "format": report_format.lower().strip(),
+            "session": session,
+            "generated_at": time.time(),
+            "generated_at_iso": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "operator_signature": operator_signature,
+            "signed_at": signed_at,
+            "signed_at_iso": datetime.fromtimestamp(signed_at).isoformat(),
+            "application": {
+                "field_name": self._field_name(record),
+                "product_name": record.get("metadata", {}).get("product_name"),
+                "epa_registration": record.get("metadata", {}).get("product_epa_registration"),
+                "applicator_name": record.get("metadata", {}).get("applicator_name"),
+                "applicator_license": record.get("metadata", {}).get("applicator_license"),
+                "target_rate": record.get("metadata", {}).get("target_rate"),
+                "target_rate_unit": record.get("metadata", {}).get("target_rate_unit"),
+                "total_volume_liters": record.get("total_volume_liters"),
+                "application_rate_liters_per_hectare": self._application_rate(record),
+            },
+            "field_boundary": self._boundary_properties(record),
+            "flight_path_summary": self._flight_path_summary(record, telemetry_history),
+            "geojson": geojson,
+        }
+        return report
+
+    def _field_name(self, record: Dict) -> Optional[str]:
+        metadata = record.get("metadata") or {}
+        field_name = metadata.get("field_name") or record.get("field_name")
+        return field_name
+
+    def _operator_name(self, record: Dict) -> Optional[str]:
+        metadata = record.get("metadata") or {}
+        return metadata.get("applicator_name") or metadata.get("operator_name")
+
+    def _extract_boundary(self, record: Dict) -> Optional[List[List[float]]]:
+        metadata = record.get("metadata") or {}
+        boundary = metadata.get("field_boundary") or metadata.get("boundary")
+        if not boundary:
+            return None
+
+        if isinstance(boundary, dict):
+            vertices = boundary.get("vertices") or []
+        else:
+            vertices = boundary
+
+        coordinates = []
+        for vertex in vertices:
+            latitude = None
+            longitude = None
+            altitude = 0.0
+            if isinstance(vertex, dict):
+                latitude = vertex.get("latitude")
+                longitude = vertex.get("longitude")
+                altitude = vertex.get("altitude", 0.0)
+            elif hasattr(vertex, "latitude") and hasattr(vertex, "longitude"):
+                latitude = getattr(vertex, "latitude")
+                longitude = getattr(vertex, "longitude")
+                altitude = getattr(vertex, "altitude", 0.0)
+            if latitude is None or longitude is None:
+                continue
+            coordinates.append([float(longitude), float(latitude), float(altitude or 0.0)])
+
+        if len(coordinates) < 3:
+            return None
+        if coordinates[0] != coordinates[-1]:
+            coordinates.append(coordinates[0])
+        return coordinates
+
+    def _flight_path(self, record: Dict, telemetry_history: Optional[List[Dict]] = None) -> List[List[float]]:
+        path = []
+        started_at = record.get("started_at")
+        stopped_at = record.get("stopped_at")
+        if telemetry_history:
+            for point in telemetry_history:
+                timestamp = point.get("timestamp")
+                if started_at and timestamp and timestamp < started_at - 5:
+                    continue
+                if stopped_at and timestamp and timestamp > stopped_at + 5:
+                    continue
+                location = point.get("location") or {}
+                latitude = location.get("latitude")
+                longitude = location.get("longitude")
+                altitude = location.get("altitude", 0.0)
+                if latitude is None or longitude is None:
+                    continue
+                path.append([float(longitude), float(latitude), float(altitude or 0.0)])
+
+        if path:
+            return path
+
+        start_location = (record.get("start_telemetry") or {}).get("location") or {}
+        stop_location = (record.get("stop_telemetry") or {}).get("location") or {}
+        for location in (start_location, stop_location):
+            latitude = location.get("latitude")
+            longitude = location.get("longitude")
+            altitude = location.get("altitude", 0.0)
+            if latitude is None or longitude is None:
+                continue
+            path.append([float(longitude), float(latitude), float(altitude or 0.0)])
+
+        return path
+
+    def _summary_point(self, record: Dict, telemetry_history: Optional[List[Dict]] = None) -> Optional[List[float]]:
+        path = self._flight_path(record, telemetry_history)
+        if path:
+            return path[len(path) // 2]
+
+        for location_key in ("stop_telemetry", "start_telemetry"):
+            location = (record.get(location_key) or {}).get("location") or {}
+            latitude = location.get("latitude")
+            longitude = location.get("longitude")
+            altitude = location.get("altitude", 0.0)
+            if latitude is None or longitude is None:
+                continue
+            return [float(longitude), float(latitude), float(altitude or 0.0)]
+        return None
+
+    def _boundary_properties(self, record: Dict) -> Dict:
+        boundary = self._extract_boundary(record)
+        properties = {
+            "field_name": self._field_name(record),
+            "area_hectares": self._boundary_area_hectares(boundary) if boundary else None,
+        }
+        return properties
+
+    def _flight_path_summary(self, record: Dict, telemetry_history: Optional[List[Dict]] = None) -> Dict:
+        path = self._flight_path(record, telemetry_history)
+        return {
+            "point_count": len(path),
+            "start": path[0] if path else None,
+            "end": path[-1] if path else None,
+            "duration_seconds": record.get("duration_seconds"),
+        }
+
+    def _application_rate(self, record: Dict) -> Optional[float]:
+        total_volume = record.get("total_volume_liters")
+        boundary = self._extract_boundary(record)
+        if total_volume is None or not boundary:
+            return None
+
+        area_hectares = self._boundary_area_hectares(boundary)
+        if not area_hectares:
+            return None
+
+        return float(total_volume) / float(area_hectares)
+
+    def _boundary_area_hectares(self, boundary: Optional[List[List[float]]]) -> Optional[float]:
+        if not boundary or len(boundary) < 4:
+            return None
+
+        lons = [point[0] for point in boundary[:-1]]
+        lats = [point[1] for point in boundary[:-1]]
+        if not lons or not lats:
+            return None
+
+        mean_lat = sum(lats) / len(lats)
+        meters_per_degree_lat = 111_132.0
+        meters_per_degree_lon = 111_320.0 * math.cos(math.radians(mean_lat))
+
+        projected = [
+            ((lon - lons[0]) * meters_per_degree_lon, (lat - lats[0]) * meters_per_degree_lat)
+            for lon, lat in zip(lons, lats)
+        ]
+        area_m2 = 0.0
+        for index, (x1, y1) in enumerate(projected):
+            x2, y2 = projected[(index + 1) % len(projected)]
+            area_m2 += x1 * y2 - x2 * y1
+        area_m2 = abs(area_m2) / 2.0
+        if area_m2 <= 0:
+            return None
+        return area_m2 / 10000.0
 
     def _write_record(self, session: str, record: Dict):
         path = self._record_path(session)

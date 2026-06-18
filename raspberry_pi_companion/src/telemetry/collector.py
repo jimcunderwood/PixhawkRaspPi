@@ -1,22 +1,21 @@
-"""
-Telemetry System
-Collects, streams, and stores vehicle telemetry data
-Handles real-time data updates via WebSocket
-"""
+"""Telemetry system with SQLite-backed history."""
 
-import logging
-import time
-import threading
 import json
+import logging
+import tempfile
+import threading
+import time
 from datetime import datetime
-from typing import Optional, Dict, List, Callable
-from collections import deque
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+
+from .database import TelemetryDatabase, TelemetryDatabaseConfig
 
 logger = logging.getLogger(__name__)
 
 
 class TelemetryPoint:
-    """Single telemetry data point"""
+    """Single telemetry data point."""
 
     __slots__ = ("timestamp", "_payload_json")
 
@@ -30,164 +29,126 @@ class TelemetryPoint:
         self._payload_json = json.dumps(payload, separators=(",", ":"))
 
     def to_dict(self) -> dict:
-        """Convert to dictionary"""
         return json.loads(self._payload_json)
 
     def to_json(self) -> str:
-        """Return a compact JSON payload for websocket broadcast."""
         return self._payload_json
 
 
 class TelemetryCollector:
-    """Collects and stores telemetry data"""
+    """Collects telemetry and persists it to SQLite."""
 
-    def __init__(self, max_history: int = 3600, update_interval: float = 0.5):
+    def __init__(
+        self,
+        max_history: int = 3600,
+        update_interval: float = 0.5,
+        database: Optional[TelemetryDatabase] = None,
+    ):
         self.max_history = max_history
         self.update_interval = update_interval
-        self.history: deque = deque(maxlen=max_history)
+        self.database = database or TelemetryDatabase(
+            TelemetryDatabaseConfig(
+                path=Path(tempfile.mkdtemp(prefix="telemetry-")) / "telemetry.sqlite3",
+            )
+        )
         self.current_state: Optional[Dict] = None
-        self.last_update = 0
+        self.last_update = 0.0
         self._lock = threading.Lock()
         self._callbacks: List[Callable] = []
         self._running = False
+        self._collection_thread: Optional[threading.Thread] = None
 
-    def start(self, vehicle_getter: Callable):
-        """
-        Start telemetry collection
-        
-        Args:
-            vehicle_getter: Callable that returns vehicle state dict
-        """
+    def attach_database(self, database: TelemetryDatabase):
+        self.database = database
+
+    def start(self, vehicle_getter: Callable, payload_getter: Optional[Callable] = None):
+        """Start telemetry collection."""
         self._running = True
         self._collection_thread = threading.Thread(
             target=self._collect_loop,
-            args=(vehicle_getter,),
-            daemon=True
+            args=(vehicle_getter, payload_getter),
+            daemon=True,
         )
         self._collection_thread.start()
         logger.info("Telemetry collection started")
 
     def stop(self):
-        """Stop telemetry collection"""
+        """Stop telemetry collection."""
         self._running = False
+        if self._collection_thread and self._collection_thread.is_alive():
+            self._collection_thread.join(timeout=2)
+        if self.database:
+            try:
+                self.database.close()
+            except Exception as e:
+                logger.debug("Telemetry database close failed: %s", str(e))
         logger.info("Telemetry collection stopped")
 
-    def _collect_loop(self, vehicle_getter: Callable):
-        """Collection loop running in background thread"""
+    def _collect_loop(self, vehicle_getter: Callable, payload_getter: Optional[Callable]):
+        """Collection loop running in background thread."""
         while self._running:
             try:
                 vehicle_state = vehicle_getter()
                 if vehicle_state:
-                    self.add_point(vehicle_state)
+                    payload_state = payload_getter() if payload_getter else None
+                    self.add_point(vehicle_state, payload_state=payload_state)
                 time.sleep(self.update_interval)
             except Exception as e:
-                logger.error(f"Error in telemetry collection: {str(e)}")
+                logger.error("Error in telemetry collection: %s", str(e))
                 time.sleep(1)
 
-    def add_point(self, vehicle_state: dict):
-        """Add telemetry point to history"""
+    def add_point(self, vehicle_state: dict, payload_state: Optional[dict] = None):
+        """Add telemetry point to history and SQLite."""
         with self._lock:
             timestamp = time.time()
-            point = TelemetryPoint(timestamp, vehicle_state)
-            self.history.append(point)
-            self.current_state = dict(vehicle_state)
+            snapshot = {
+                "timestamp": timestamp,
+                "datetime": datetime.fromtimestamp(timestamp).isoformat(),
+                **vehicle_state,
+            }
+            if payload_state is not None:
+                snapshot["payload"] = payload_state
+
+            point = TelemetryPoint(timestamp, snapshot)
+            self.current_state = dict(snapshot)
             self.last_update = timestamp
-            
-            # Trigger callbacks
+
+            if self.database:
+                self.database.record(snapshot)
+
             for callback in list(self._callbacks):
                 try:
                     callback(point)
                 except Exception as e:
-                    logger.error(f"Error in telemetry callback: {str(e)}")
+                    logger.error("Error in telemetry callback: %s", str(e))
 
     def get_current(self) -> Optional[Dict]:
-        """Get most recent telemetry point"""
+        """Get most recent telemetry point."""
         with self._lock:
             return self.current_state
 
     def get_history(self, seconds: Optional[int] = None) -> List[Dict]:
-        """
-        Get telemetry history
-        
-        Args:
-            seconds: Get last N seconds of data (None = all)
-            
-        Returns:
-            List of telemetry points
-        """
-        with self._lock:
-            if seconds is None:
-                return [point.to_dict() for point in self.history]
-            
-            cutoff_time = time.time() - seconds
-            return [
-                point.to_dict() for point in self.history
-                if point.timestamp >= cutoff_time
-            ]
+        """Get telemetry history from SQLite."""
+        if not self.database:
+            return []
+        return self.database.query(seconds=seconds)
 
     def get_statistics(self, seconds: int = 60) -> Dict:
-        """Get telemetry statistics over time window"""
-        history = self.get_history(seconds)
-        
-        if not history:
+        """Get telemetry statistics over a time window."""
+        if not self.database:
             return {}
-        
-        stats = {
-            'count': len(history),
-            'duration': seconds,
-            'start_time': history[0]['timestamp'],
-            'end_time': history[-1]['timestamp'],
-        }
-        
-        # Battery statistics
-        battery_levels = [
-            p['battery']['level_percent']
-            for p in history
-            if 'battery' in p and p['battery'].get('level_percent') is not None
-        ]
-        if battery_levels:
-            stats['battery'] = {
-                'min': min(battery_levels),
-                'max': max(battery_levels),
-                'avg': sum(battery_levels) / len(battery_levels),
-                'current': battery_levels[-1],
-            }
-        
-        # Altitude statistics
-        altitudes = [
-            p['location']['altitude']
-            for p in history
-            if 'location' in p and p['location'].get('altitude') is not None
-        ]
-        if altitudes:
-            stats['altitude'] = {
-                'min': min(altitudes),
-                'max': max(altitudes),
-                'avg': sum(altitudes) / len(altitudes),
-                'current': altitudes[-1],
-            }
-        
-        # Speed statistics
-        speeds = [p.get('ground_speed', 0) for p in history]
-        if speeds:
-            stats['ground_speed'] = {
-                'min': min(speeds),
-                'max': max(speeds),
-                'avg': sum(speeds) / len(speeds),
-                'current': speeds[-1],
-            }
-        
-        return stats
+        return self.database.statistics(seconds)
 
     def register_callback(self, callback: Callable):
-        """Register callback for telemetry updates"""
+        """Register callback for telemetry updates."""
         with self._lock:
             self._callbacks.append(callback)
 
     def clear_history(self):
-        """Clear all stored telemetry data"""
+        """Clear all stored telemetry data."""
         with self._lock:
-            self.history.clear()
+            if self.database:
+                self.database.clear()
             self.current_state = None
             logger.info("Telemetry history cleared")
 
@@ -228,12 +189,12 @@ class LiveTelemetryStream:
 class TelemetryManager:
     """High-level telemetry management"""
 
-    def __init__(self, max_history: int = 3600, update_interval: float = 0.5):
-        self.collector = TelemetryCollector(max_history, update_interval)
+    def __init__(self, max_history: int = 3600, update_interval: float = 0.5, database: Optional[TelemetryDatabase] = None):
+        self.collector = TelemetryCollector(max_history, update_interval, database=database)
         self.stream = LiveTelemetryStream()
         self._vehicle_getter = None
 
-    def initialize(self, vehicle_getter: Callable):
+    def initialize(self, vehicle_getter: Callable, payload_getter: Optional[Callable] = None):
         """
         Initialize telemetry system
         
@@ -246,7 +207,7 @@ class TelemetryManager:
         self.collector.register_callback(self._on_telemetry_update)
         
         # Start collection
-        self.collector.start(vehicle_getter)
+        self.collector.start(vehicle_getter, payload_getter=payload_getter)
 
     def _on_telemetry_update(self, point: TelemetryPoint):
         """Handle new telemetry point"""

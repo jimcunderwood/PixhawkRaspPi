@@ -11,6 +11,7 @@ from fastapi import HTTPException, WebSocketDisconnect
 from fastapi.routing import APIRoute
 from fastapi.responses import Response
 from pydantic import ValidationError
+from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -23,10 +24,21 @@ from src.api.server import (
     ConfigProfileSaveRequest,
     ControlAuthority,
     ControlAuthorityRequest,
+    ExifGeotagRequest,
     GoToRequest,
+    GeofenceZoneRequest,
+    GeotagExportRequest,
+    GeotagRecordRequest,
+    MappingCameraSpecRequest,
     NavigationConfigRequest,
+    OrthomosaicPreviewRequest,
+    PointCloudScanRequest,
+    RemoteIDRequest,
+    SurveyGridPlanRequest,
+    NdviPreviewRequest,
     SprayApplicationRecordRequest,
     ServerAPI,
+    WaiverRequest,
     WaypointRequest,
     api_auth_context,
 )
@@ -215,6 +227,30 @@ class FakeCamera:
         return photo_path if photo_path.is_file() else None
 
 
+class FakeMappingCamera(FakeCamera):
+    def get_session_manifest(self, session):
+        return {
+            "session": session,
+            "photos": [
+                {
+                    "filename": "red.jpg",
+                    "captured_at": 1_700_000_000.0,
+                    "session": session,
+                    "geotag": {
+                        "location": {
+                            "latitude": 40.1,
+                            "longitude": -74.2,
+                            "altitude": 55.0,
+                        },
+                        "heading": 90.0,
+                        "captured_at": 1_700_000_000.0,
+                    },
+                    "camera_trigger": {"triggered_at": 1_700_000_000.1},
+                }
+            ],
+        }
+
+
 class FakePayloadController:
     def __init__(self, tmp_path):
         self.camera = FakeCamera(tmp_path)
@@ -359,6 +395,115 @@ def test_navigation_config_request_model():
     assert request.apply_to_pixhawk is True
 
 
+def test_mapping_request_models():
+    assert MappingCameraSpecRequest.model_validate(
+        {
+            "sensor_width_mm": 13.2,
+            "sensor_height_mm": 8.8,
+            "image_width_px": 4000,
+            "image_height_px": 3000,
+            "focal_length_mm": 8.8,
+        }
+    ).image_width_px == 4000
+
+    assert SurveyGridPlanRequest.model_validate(
+        {
+            "field_boundary": {
+                "name": "Field A",
+                "vertices": [
+                    {"latitude": 40.0, "longitude": -74.0},
+                    {"latitude": 40.0, "longitude": -73.9},
+                    {"latitude": 40.1, "longitude": -73.9},
+                ],
+            },
+            "camera_spec": {
+                "sensor_width_mm": 13.2,
+                "sensor_height_mm": 8.8,
+                "image_width_px": 4000,
+                "image_height_px": 3000,
+                "focal_length_mm": 8.8,
+            },
+        }
+    ).field_boundary.name == "Field A"
+
+    assert GeotagRecordRequest.model_validate(
+        {
+            "filename": "img_0001.jpg",
+            "latitude": 40.0,
+            "longitude": -74.0,
+            "altitude_m": 50.0,
+            "captured_at": 1_700_000_000.0,
+        }
+    ).filename == "img_0001.jpg"
+
+    assert GeotagExportRequest.model_validate(
+        {"records": [{"filename": "img_0001.jpg", "latitude": 40.0, "longitude": -74.0, "altitude_m": 50.0, "captured_at": 1_700_000_000.0}]}
+    ).records[0].filename == "img_0001.jpg"
+
+    assert NdviPreviewRequest.model_validate(
+        {"red_filename": "red.jpg", "nir_filename": "nir.jpg"}
+    ).red_band_index == server_module.config.mapping.ndvi_red_band_index
+
+    assert OrthomosaicPreviewRequest.model_validate(
+        {"filenames": ["a.jpg", "b.jpg"]}
+    ).columns == server_module.config.mapping.orthomosaic_preview_max_columns
+
+    assert PointCloudScanRequest.model_validate(
+        {
+            "field_boundary": {
+                "name": "Field B",
+                "vertices": [
+                    {"latitude": 40.0, "longitude": -74.0},
+                    {"latitude": 40.0, "longitude": -73.9},
+                    {"latitude": 40.1, "longitude": -73.9},
+                ],
+            }
+        }
+    ).field_boundary.name == "Field B"
+
+    assert GeofenceZoneRequest.model_validate(
+        {
+            "name": "Airport NFZ",
+            "zone_type": "no_fly",
+            "polygon": [
+                {"latitude": 40.0, "longitude": -74.0},
+                {"latitude": 40.0, "longitude": -73.9},
+                {"latitude": 40.1, "longitude": -73.9},
+            ],
+        }
+    ).name == "Airport NFZ"
+
+    assert RemoteIDRequest.model_validate(
+        {"enabled": True, "operator_id": "pilot-1", "broadcast_method": "mavlink"}
+    ).operator_id == "pilot-1"
+
+    assert WaiverRequest.model_validate(
+        {"night_flight_authorized": True, "notes": "Night waiver"}
+    ).night_flight_authorized is True
+
+
+def test_safety_and_compliance_routes_expose_state(server_api):
+    app = server_api.get_app()
+    geofences_endpoint = get_route_endpoint(app, "/api/safety/geofences", "GET")
+    safety_status_endpoint = get_route_endpoint(app, "/api/safety/status", "GET")
+    remote_id_endpoint = get_route_endpoint(app, "/api/compliance/remote-id", "GET")
+    waivers_endpoint = get_route_endpoint(app, "/api/compliance/waivers", "GET")
+    arming_checks_endpoint = get_route_endpoint(app, "/api/arming/checks", "GET")
+
+    geofence_response = asyncio.run(geofences_endpoint())
+    safety_response = asyncio.run(safety_status_endpoint())
+    remote_id_response = asyncio.run(remote_id_endpoint())
+    waivers_response = asyncio.run(waivers_endpoint())
+    arming_response = asyncio.run(arming_checks_endpoint())
+
+    assert geofence_response.data["zones"] == []
+    assert "remote_id" in safety_response.data
+    assert "waivers" in safety_response.data
+    assert isinstance(remote_id_response.data, dict)
+    assert isinstance(waivers_response.data, dict)
+    assert "prearm" in arming_response.data
+
+
 def test_navigation_config_serialization_exposes_sensor_hooks(server_api, monkeypatch):
     monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_enabled", True)
     monkeypatch.setattr(server_module.config.mission, "obstacle_avoidance_mode", "bendy_ruler")
@@ -464,6 +609,121 @@ def test_navigation_sensors_endpoint_exposes_live_status(server_api):
     assert data["terrain_following"]["sensor_id"] == 0
     assert data["distance_sensors"][0]["sensor_id"] == 0
     assert data["distance_sensors"][1]["sensor_id"] == 1
+
+
+def test_mapping_endpoints_expose_planning_and_artifacts(server_api, tmp_path, monkeypatch):
+    server_api.payload_controller.camera = FakeMappingCamera(tmp_path)
+    monkeypatch.setattr(server_api, "_require_command_authority", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server_api, "_require_success", lambda *args, **kwargs: None)
+
+    Image.new("RGB", (32, 32), color="red").save(tmp_path / "red.jpg")
+    Image.new("RGB", (32, 32), color="green").save(tmp_path / "nir.jpg")
+    Image.new("RGB", (32, 32), color="white").save(tmp_path / "photo1.jpg")
+    Image.new("RGB", (32, 32), color="white").save(tmp_path / "photo2.jpg")
+
+    async def exercise_routes():
+        survey_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/mapping/survey-grid",
+            "POST",
+        )
+        export_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/mapping/geotag/export",
+            "POST",
+        )
+        ndvi_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/mapping/ndvi/preview",
+            "POST",
+        )
+        mosaic_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/mapping/orthomosaic/preview",
+            "POST",
+        )
+        scan_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/mapping/point-cloud/scan",
+            "POST",
+        )
+        geotag_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/mapping/geotag/exif",
+            "POST",
+        )
+
+        survey_response = await survey_endpoint(
+            SurveyGridPlanRequest(
+                field_boundary={
+                    "name": "Field A",
+                    "vertices": [
+                        {"latitude": 40.0, "longitude": -74.0},
+                        {"latitude": 40.0, "longitude": -73.999},
+                        {"latitude": 40.001, "longitude": -73.999},
+                    ],
+                    "altitude": 12.0,
+                },
+                camera_spec={
+                    "sensor_width_mm": 13.2,
+                    "sensor_height_mm": 8.8,
+                    "image_width_px": 4000,
+                    "image_height_px": 3000,
+                    "focal_length_mm": 8.8,
+                },
+            ),
+            x_control_token=None,
+        )
+        export_response = await export_endpoint(
+            GeotagExportRequest(
+                records=[
+                    GeotagRecordRequest(
+                        filename="img_0001.jpg",
+                        latitude=40.1,
+                        longitude=-74.2,
+                        altitude_m=55.0,
+                        captured_at=1_700_000_000.0,
+                    )
+                ]
+            ),
+            x_control_token=None,
+        )
+        ndvi_response = await ndvi_endpoint(
+            NdviPreviewRequest(red_filename="red.jpg", nir_filename="nir.jpg"),
+            x_control_token=None,
+        )
+        mosaic_response = await mosaic_endpoint(
+            OrthomosaicPreviewRequest(filenames=["photo1.jpg", "photo2.jpg"]),
+            x_control_token=None,
+        )
+        scan_response = await scan_endpoint(
+            PointCloudScanRequest(
+                field_boundary={
+                    "name": "Scan Field",
+                    "vertices": [
+                        {"latitude": 40.0, "longitude": -74.0},
+                        {"latitude": 40.0, "longitude": -73.999},
+                        {"latitude": 40.001, "longitude": -73.999},
+                    ],
+                }
+            ),
+            x_control_token=None,
+        )
+        geotag_response = await geotag_endpoint(
+            ExifGeotagRequest(session="field-1"),
+            x_control_token=None,
+        )
+        return survey_response, export_response, ndvi_response, mosaic_response, scan_response, geotag_response
+
+    survey_response, export_response, ndvi_response, mosaic_response, scan_response, geotag_response = asyncio.run(exercise_routes())
+
+    assert survey_response.data["waypoints"]
+    assert export_response.media_type == "text/csv"
+    assert "img_0001.jpg" in export_response.body.decode()
+    assert ndvi_response.media_type == "image/png"
+    assert mosaic_response.media_type == "image/png"
+    assert scan_response.data["points"]
+    assert geotag_response.data["tagged_count"] >= 0
 
 
 def test_health_and_readiness_expose_pixhawk_connection_state(server_api, monkeypatch):
