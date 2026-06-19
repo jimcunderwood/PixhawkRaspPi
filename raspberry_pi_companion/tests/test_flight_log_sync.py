@@ -57,6 +57,7 @@ def make_manager(tmp_path: Path) -> FlightLogSyncManager:
         flight_log_directory=str(tmp_path / "flight-logs"),
         flight_log_sync_delay_seconds=0.0,
         flight_log_download_limit=5,
+        flight_log_max_drive_fraction=0.5,
         flight_log_backup_count=3,
         flight_log_cloud_upload_enabled=False,
         flight_log_cloud_upload_url="",
@@ -98,6 +99,51 @@ def test_flight_log_sync_replay_can_upload(tmp_path, monkeypatch):
     assert replayed["upload"]["status"] == "uploaded"
     assert calls["archive_path"] == archive
     assert calls["manifest_path"].name == "manifest.json"
+
+
+def test_flight_log_sync_enforces_storage_budget_oldest_first(tmp_path, monkeypatch):
+    manager = make_manager(tmp_path)
+    manager.base_directory.mkdir(parents=True, exist_ok=True)
+
+    archive_old = make_archive(manager.base_directory, "mission_a", "20240618T150000Z")
+    time.sleep(0.01)
+    archive_mid = make_archive(manager.base_directory, "mission_b", "20240618T160000Z")
+    time.sleep(0.01)
+    archive_new = make_archive(manager.base_directory, "mission_c", "20240618T170000Z")
+
+    monkeypatch.setattr("src.logsync.manager.shutil.disk_usage", lambda _path: SimpleNamespace(total=300, used=0, free=300))
+    monkeypatch.setattr(manager, "_directory_size_bytes", lambda: 200)
+
+    manager._enforce_storage_budget()
+
+    assert not archive_old.exists()
+    assert archive_mid.exists()
+    assert archive_new.exists()
+
+
+def test_flight_log_sync_download_latest_archive(tmp_path):
+    manager = make_manager(tmp_path)
+    archive_a = make_archive(manager.base_directory, "flight_guided", "20240618T160000Z", "landing")
+    time.sleep(0.01)
+    archive_b = make_archive(manager.base_directory, "flight_guided", "20240618T170000Z", "manual")
+
+    assert manager.download_archive() == archive_b
+    assert manager.download_archive(str(archive_a.name)) == archive_a
+
+
+def test_flight_log_sync_cleanup_all_removes_archives_and_files(tmp_path):
+    manager = make_manager(tmp_path)
+    archive = make_archive(manager.base_directory, "flight_guided", "20240618T170000Z", "manual")
+    extra_file = manager.base_directory / "misc.txt"
+    extra_file.parent.mkdir(parents=True, exist_ok=True)
+    extra_file.write_text("x")
+
+    result = manager.cleanup_all()
+
+    assert result["removed"]["archives"] == 1
+    assert result["removed"]["other_files"] >= 1
+    assert not archive.exists()
+    assert not extra_file.exists()
 
 
 @pytest.mark.asyncio

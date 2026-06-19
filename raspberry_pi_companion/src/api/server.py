@@ -756,6 +756,26 @@ class FlightLogReplayRequest(BaseModel):
     upload: bool = False
 
 
+class LogCleanupResponse(BaseModel):
+    removed: Dict
+
+
+class StorageFileDeleteRequest(BaseModel):
+    paths: List[str] = Field(..., min_length=1)
+
+
+class StorageFileInfo(BaseModel):
+    path: str
+    category: str
+    size_bytes: int
+    modified_at: float
+
+
+class StorageStatusResponse(BaseModel):
+    paths: Dict
+    usage: Dict
+
+
 class FarmExportRequest(BaseModel):
     session: Optional[str] = Field(None, min_length=1, max_length=80)
     report_format: str = Field(default="json", pattern="^(json|isoxml|agleader)$")
@@ -1643,6 +1663,128 @@ class ServerAPI:
         if not success:
             raise HTTPException(status_code=500, detail="Failed to encode image preview.")
         return encoded.tobytes()
+
+    def _cleanup_media_directory(self, media_directory: Path) -> int:
+        if not media_directory.exists():
+            return 0
+
+        removed = 0
+        for path in sorted(media_directory.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+            try:
+                if path.is_file():
+                    if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".mp4", ".mov", ".avi", ".mkv"}:
+                        removed += 1
+                    path.unlink()
+                elif path.is_dir() and path != media_directory:
+                    shutil.rmtree(path, ignore_errors=False)
+            except OSError as e:
+                logger.warning("Failed to remove media path %s: %s", path, str(e))
+
+        return removed
+
+    def _storage_roots(self) -> Dict[str, Path]:
+        roots: Dict[str, Path] = {
+            "flight_logs": Path(
+                getattr(self.flight_log_sync_manager, "base_directory", config.storage.flight_log_directory)
+            ),
+            "camera_media": Path(getattr(getattr(self.payload_controller, "camera", None), "photo_directory", config.payload.photo_directory)),
+            "audit_logs": Path(config.api.audit_log_file).parent,
+            "geotiff_assets": Path(config.storage.geotiff_asset_directory),
+            "spray_records": Path(config.payload.spray_application_record_directory),
+        }
+        return roots
+
+    def _storage_path_category(self, path: Path) -> Optional[str]:
+        resolved = path.resolve()
+        for category, root in self._storage_roots().items():
+            try:
+                resolved.relative_to(root.resolve())
+                return category
+            except ValueError:
+                continue
+        return None
+
+    def _storage_path_usage(self, path: Path) -> Optional[Dict]:
+        try:
+            if not path.exists():
+                return None
+            usage = shutil.disk_usage(path)
+            return {
+                "path": str(path),
+                "total_bytes": usage.total,
+                "used_bytes": usage.used,
+                "free_bytes": usage.free,
+            }
+        except OSError as e:
+            return {"path": str(path), "error": str(e)}
+
+    def _storage_file_info(self, path: Path, category: Optional[str] = None) -> Optional[Dict]:
+        if not path.is_file():
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return {
+            "path": str(path),
+            "category": category or self._storage_path_category(path.parent) or "unknown",
+            "size_bytes": stat.st_size,
+            "modified_at": stat.st_mtime,
+        }
+
+    def _storage_file_candidates(self, category: Optional[str] = None) -> List[Path]:
+        roots = self._storage_roots()
+        selected = roots.items() if not category else [(category, roots.get(category))]
+        candidates: List[Path] = []
+        for root_name, root in selected:
+            if not root:
+                continue
+            try:
+                if not root.exists():
+                    continue
+            except OSError:
+                continue
+            for path in root.rglob("*"):
+                if path.is_file():
+                    info = self._storage_file_info(path, category=root_name)
+                    if info and (not category or info["category"] == category):
+                        candidates.append(path)
+        candidates.sort(key=lambda item: (item.stat().st_mtime, str(item)), reverse=True)
+        return candidates
+
+    def _safe_delete_storage_file(self, path_str: str) -> bool:
+        candidate = Path(path_str)
+        roots = self._storage_roots()
+        resolved: Optional[Path] = None
+        if candidate.is_absolute():
+            resolved = candidate
+        else:
+            matches = []
+            for root in roots.values():
+                if root and root.exists():
+                    possible = root / candidate
+                    if possible.exists():
+                        matches.append(possible)
+            if len(matches) == 1:
+                resolved = matches[0]
+
+        if resolved is None:
+            for root in roots.values():
+                if not root or not root.exists():
+                    continue
+                matches = [p for p in root.rglob(candidate.name) if p.is_file()]
+                if len(matches) == 1:
+                    resolved = matches[0]
+                    break
+
+        if resolved is None or not resolved.is_file():
+            return False
+
+        if self._storage_path_category(resolved) is None:
+            return False
+
+        resolved.unlink()
+        return True
 
     def _get_calibration_config(self) -> Dict:
         if hasattr(self.payload_controller, "get_calibration_config"):
@@ -4899,6 +5041,125 @@ class ServerAPI:
                 )
             except HTTPException as e:
                 self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/storage/status",
+            response_model=StorageStatusResponse,
+            tags=["Storage"],
+            dependencies=protected,
+        )
+        async def get_storage_status():
+            roots = self._storage_roots()
+            usage = {
+                category: self._storage_path_usage(root)
+                for category, root in roots.items()
+            }
+            return StorageStatusResponse(
+                paths={category: str(root) for category, root in roots.items()},
+                usage=usage,
+            )
+
+        @self.app.get(
+            "/api/storage/files",
+            response_model=StatusResponse,
+            tags=["Storage"],
+            dependencies=protected,
+        )
+        async def list_storage_files(category: Optional[str] = Query(None, pattern="^(flight_logs|camera_media|audit_logs|geotiff_assets|spray_records)$"), limit: int = Query(500, ge=1, le=5000)):
+            files = []
+            for path in self._storage_file_candidates(category=category):
+                info = self._storage_file_info(path)
+                if info:
+                    files.append(info)
+                if len(files) >= limit:
+                    break
+            return StatusResponse(
+                status="success",
+                message="Storage files retrieved",
+                data={"files": files, "category": category, "count": len(files)},
+            )
+
+        @self.app.delete(
+            "/api/storage/files",
+            response_model=StatusResponse,
+            tags=["Storage"],
+            dependencies=protected,
+        )
+        async def delete_storage_files(request: StorageFileDeleteRequest, x_control_token: Optional[str] = Header(None)):
+            action = "storage.files_delete"
+            parameters = request.model_dump(mode="json")
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                removed = []
+                skipped = []
+                for item in request.paths:
+                    if self._safe_delete_storage_file(item):
+                        removed.append(item)
+                    else:
+                        skipped.append(item)
+
+                self._audit_command(action, "success", parameters=parameters, details={"removed": removed, "skipped": skipped})
+                return StatusResponse(
+                    status="success",
+                    message="Selected files processed",
+                    data={"removed": removed, "skipped": skipped},
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/log-sync/download",
+            response_model=None,
+            tags=["Flight Logs"],
+            dependencies=protected,
+        )
+        async def download_log_sync_archive(archive_path: Optional[str] = Query(None)):
+            if not self.flight_log_sync_manager:
+                raise HTTPException(status_code=503, detail="Flight log sync is unavailable.")
+
+            archive = self.flight_log_sync_manager.download_archive(archive_path=archive_path)
+            return FileResponse(archive, media_type="application/zip", filename=archive.name)
+
+        @self.app.post(
+            "/api/storage/cleanup",
+            response_model=StatusResponse,
+            tags=["Storage"],
+            dependencies=protected,
+        )
+        async def cleanup_storage(x_control_token: Optional[str] = Header(None)):
+            action = "storage.cleanup"
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                if not self.flight_log_sync_manager:
+                    raise HTTPException(status_code=503, detail="Flight log sync is unavailable.")
+
+                flight_log_cleanup = self.flight_log_sync_manager.cleanup_all()
+                photo_directory = getattr(getattr(self.payload_controller, "camera", None), "photo_directory", None)
+                media_removed = 0
+                if photo_directory:
+                    media_removed = self._cleanup_media_directory(Path(photo_directory))
+
+                self._audit_command(
+                    action,
+                    "success",
+                    parameters={},
+                    details={
+                        "flight_logs": flight_log_cleanup.get("removed", {}),
+                        "media_removed": media_removed,
+                    },
+                )
+                return StatusResponse(
+                    status="success",
+                    message="Storage cleanup completed",
+                    data={
+                        "flight_logs": flight_log_cleanup.get("removed", {}),
+                        "media_removed": media_removed,
+                    },
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, {}, e)
                 raise
 
         @self.app.post(

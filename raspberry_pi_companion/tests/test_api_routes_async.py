@@ -1,10 +1,12 @@
 import io
+from pathlib import Path
 
 import pytest
 pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from PIL import Image
 
+from src.api import server as server_module
 from src.api.server import (
     BaseStationWizardRequest,
     ControlAuthorityRequest,
@@ -12,6 +14,7 @@ from src.api.server import (
     GeoTiffBoundsRequest,
     PpkProcessRequest,
     SwarmConfig,
+    StorageFileDeleteRequest,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -153,3 +156,55 @@ async def test_httpx_async_client_covers_calibration_farm_swarm_and_geotiff(asyn
     assert geotiff_detail["source_filename"] == "field-north.tif"
     assert geotiff_preview.status_code == 200
     assert geotiff_delete is True
+
+
+async def test_httpx_async_client_covers_storage_status_listing_and_delete(async_server_api, tmp_path):
+    app = async_server_api.get_app()
+    server_module.config.storage.flight_log_directory = str(tmp_path / "flight-logs")
+    server_module.config.storage.geotiff_asset_directory = str(tmp_path / "geotiff" / "assets")
+    server_module.config.payload.spray_application_record_directory = str(tmp_path / "application-records")
+    server_module.config.api.audit_log_file = str(tmp_path / "audit" / "events.jsonl")
+    async_server_api.flight_log_sync_manager = type(
+        "FlightLogSyncManager",
+        (),
+        {"base_directory": Path(tmp_path / "flight-logs")},
+    )()
+    async_server_api.payload_controller.camera = type(
+        "Camera",
+        (),
+        {"photo_directory": Path(tmp_path / "photos")},
+    )()
+    authority = async_server_api.control_authority.acquire("pytest", operator="qa", force=True)
+    command_token = authority["authority"]["token"]
+
+    flight_log_root = Path(tmp_path / "flight-logs" / "mission-a")
+    media_root = Path(tmp_path / "photos" / "mission-b")
+    audit_root = Path(tmp_path / "audit")
+    geotiff_root = Path(tmp_path / "geotiff" / "assets")
+    spray_root = Path(tmp_path / "application-records")
+    for root in [flight_log_root, media_root, audit_root, geotiff_root, spray_root]:
+        root.mkdir(parents=True, exist_ok=True)
+
+    flight_log_file = flight_log_root / "20240618T160000Z.zip"
+    flight_log_file.write_bytes(b"zip")
+    photo_file = media_root / "photo-1.jpg"
+    photo_file.write_bytes(b"jpg")
+    video_file = media_root / "video-1.mp4"
+    video_file.write_bytes(b"mp4")
+    audit_file = audit_root / "events.jsonl"
+    audit_file.write_text("audit")
+
+    storage_status = await get_route_endpoint(app, "/api/storage/status", "GET")()
+    storage_files = await get_route_endpoint(app, "/api/storage/files", "GET")()
+    delete_result = await get_route_endpoint(app, "/api/storage/files", "DELETE")(
+        StorageFileDeleteRequest(paths=[str(photo_file), str(flight_log_file)]),
+        x_control_token=command_token,
+    )
+
+    assert storage_status.usage["flight_logs"]["path"].endswith("flight-logs")
+    assert storage_status.usage["camera_media"]["path"].endswith("photos")
+    assert "files" in storage_files.data
+    assert isinstance(storage_files.data["files"], list)
+    assert delete_result.data["removed"] == [str(photo_file), str(flight_log_file)]
+    assert not photo_file.exists()
+    assert not flight_log_file.exists()

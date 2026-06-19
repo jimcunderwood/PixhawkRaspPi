@@ -17,6 +17,7 @@ export type DroneFleetEntry = {
   role?: string;
   transport: DroneTransport;
   endpoints?: string[];
+  telemetry_refresh_interval_ms?: number;
   capabilities?: DroneCapability[];
   status?: string;
   last_heartbeat?: string;

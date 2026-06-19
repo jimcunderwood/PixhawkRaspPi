@@ -251,6 +251,13 @@ export function UserSettingsPanel({
     );
   }
 
+  function setSelectedDrone(profileId: string, droneId: string) {
+    setProfileField(profileId, (profile) => ({
+      ...profile,
+      selected_drone_id: droneId,
+    }));
+  }
+
   async function handleSignIn() {
     await onLogin({
       username,
@@ -372,15 +379,10 @@ export function UserSettingsPanel({
                 </label>
 
                 <label className="field">
-                  <span>Active drone</span>
+                  <span>Configured drone</span>
                   <select
                     value={activeProfile.selected_drone_id ?? activeDrone?.drone_id ?? ''}
-                    onChange={(event) =>
-                      setProfileField(activeProfile.profile_id, (profile) => ({
-                        ...profile,
-                        selected_drone_id: event.target.value,
-                      }))
-                    }
+                    onChange={(event) => setSelectedDrone(activeProfile.profile_id, event.target.value)}
                   >
                     {activeProfile.fleet.drones.map((drone) => (
                       <option key={drone.drone_id} value={drone.drone_id}>
@@ -391,291 +393,316 @@ export function UserSettingsPanel({
                 </label>
 
                 <div className="profile-drone-header">
-                  <span className="metric-title">Drone connections</span>
+                  <span className="metric-title">Drone connection</span>
                   <button type="button" className="ghost-button" onClick={() => addDrone(activeProfile.profile_id)}>
                     Add drone
                   </button>
                 </div>
+                {activeDrone ? (
+                  <div className="stack">
+                    <div className="settings-drone-head">
+                      <strong>{activeDrone.callsign ?? activeDrone.drone_id}</strong>
+                      <div className="settings-drone-actions">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => deleteDrone(activeProfile.profile_id, activeDrone.drone_id)}
+                          disabled={activeProfile.fleet.drones.length <= 1}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
 
-                <div className="settings-drone-list">
-                  {activeProfile.fleet.drones.map((drone) => {
-                    const endpointValues = drone.endpoints?.length ? drone.endpoints : [ensurePrimaryEndpoint(drone)];
-                    return (
-                      <article className="settings-drone-card" key={drone.drone_id}>
-                        <div className="settings-drone-head">
-                          <strong>{drone.callsign ?? drone.drone_id}</strong>
-                          <div className="settings-drone-actions">
+                    <div className="config-grid">
+                      <label className="field">
+                        <span>Drone ID</span>
+                        <input
+                          value={activeDrone.drone_id}
+                          onChange={(event) =>
+                            setProfileField(activeProfile.profile_id, (profile) => {
+                              const nextDroneId = event.target.value;
+                              return {
+                                ...profile,
+                                selected_drone_id:
+                                  profile.selected_drone_id === activeDrone.drone_id ? nextDroneId : profile.selected_drone_id,
+                                fleet: {
+                                  ...profile.fleet,
+                                  drones: profile.fleet.drones.map((entry) =>
+                                    entry.drone_id === activeDrone.drone_id ? { ...entry, drone_id: nextDroneId } : entry,
+                                  ),
+                                },
+                              };
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Callsign</span>
+                        <input
+                          value={activeDrone.callsign ?? ''}
+                          onChange={(event) =>
+                            setProfileField(activeProfile.profile_id, (profile) => ({
+                              ...profile,
+                              fleet: {
+                                ...profile.fleet,
+                                drones: profile.fleet.drones.map((entry) =>
+                                  entry.drone_id === activeDrone.drone_id ? { ...entry, callsign: event.target.value } : entry,
+                                ),
+                              },
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Role</span>
+                        <input
+                          value={activeDrone.role ?? ''}
+                          onChange={(event) =>
+                            setProfileField(activeProfile.profile_id, (profile) => ({
+                              ...profile,
+                              fleet: {
+                                ...profile.fleet,
+                                drones: profile.fleet.drones.map((entry) =>
+                                  entry.drone_id === activeDrone.drone_id ? { ...entry, role: event.target.value } : entry,
+                                ),
+                              },
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Transport</span>
+                        <select
+                          value={activeDrone.transport.type}
+                          onChange={(event) =>
+                            setProfileField(activeProfile.profile_id, (profile) => ({
+                              ...profile,
+                              fleet: {
+                                ...profile.fleet,
+                                drones: profile.fleet.drones.map((entry) =>
+                                  entry.drone_id === activeDrone.drone_id
+                                    ? {
+                                        ...entry,
+                                        transport: {
+                                          ...entry.transport,
+                                          type: event.target.value as TransportKind,
+                                        },
+                                      }
+                                    : entry,
+                                ),
+                              },
+                            }))
+                          }
+                        >
+                          {['http', 'websocket', 'ipc', 'udp', 'mavlink', 'ble', 'native'].map((kind) => (
+                            <option key={kind} value={kind}>
+                              {kind}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>Companion endpoint</span>
+                        <input
+                          value={activeDrone.transport.endpoint}
+                          onChange={(event) =>
+                            setProfileField(activeProfile.profile_id, (profile) => ({
+                              ...profile,
+                              fleet: {
+                                ...profile.fleet,
+                                drones: profile.fleet.drones.map((entry) =>
+                                  entry.drone_id === activeDrone.drone_id
+                                    ? {
+                                        ...entry,
+                                        transport: {
+                                          ...entry.transport,
+                                          endpoint: event.target.value,
+                                        },
+                                        endpoints: [event.target.value, ...(entry.endpoints ?? []).slice(1)],
+                                      }
+                                    : entry,
+                                ),
+                              },
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Telemetry refresh interval (ms)</span>
+                        <input
+                          type="number"
+                          min={250}
+                          max={5000}
+                          step={50}
+                          value={activeDrone.telemetry_refresh_interval_ms ?? 1000}
+                          onChange={(event) =>
+                            setProfileField(activeProfile.profile_id, (profile) => ({
+                              ...profile,
+                              fleet: {
+                                ...profile.fleet,
+                                drones: profile.fleet.drones.map((entry) =>
+                                  entry.drone_id === activeDrone.drone_id
+                                    ? {
+                                        ...entry,
+                                        telemetry_refresh_interval_ms: Number.isFinite(event.target.valueAsNumber)
+                                          ? event.target.valueAsNumber
+                                          : undefined,
+                                      }
+                                    : entry,
+                                ),
+                              },
+                            }))
+                          }
+                          placeholder="1000"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Api Key</span>
+                        <input
+                          value={activeDrone.transport.api_key ?? ''}
+                          onChange={(event) =>
+                            setProfileField(activeProfile.profile_id, (profile) => ({
+                              ...profile,
+                              fleet: {
+                                ...profile.fleet,
+                                drones: profile.fleet.drones.map((entry) =>
+                                  entry.drone_id === activeDrone.drone_id
+                                    ? {
+                                        ...entry,
+                                        transport: {
+                                          ...entry.transport,
+                                          api_key: event.target.value,
+                                        },
+                                      }
+                                    : entry,
+                                ),
+                              },
+                            }))
+                          }
+                          placeholder="x-api-key"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Control token</span>
+                        <input
+                          value={activeDrone.transport.control_token ?? ''}
+                          onChange={(event) =>
+                            setProfileField(activeProfile.profile_id, (profile) => ({
+                              ...profile,
+                              fleet: {
+                                ...profile.fleet,
+                                drones: profile.fleet.drones.map((entry) =>
+                                  entry.drone_id === activeDrone.drone_id
+                                    ? {
+                                        ...entry,
+                                        transport: {
+                                          ...entry.transport,
+                                          control_token: event.target.value,
+                                        },
+                                      }
+                                    : entry,
+                                ),
+                              },
+                            }))
+                          }
+                          placeholder="x-control-token"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </label>
+                      <div className="field authority-field">
+                        <span>Control authority</span>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => void onAcquireAuthority(activeProfile.profile_id, activeDrone.drone_id)}
+                          disabled={saving || loading || acquiringAuthorityDroneId === activeDrone.drone_id}
+                        >
+                          {acquiringAuthorityDroneId === activeDrone.drone_id ? 'Acquiring...' : 'Acquire authority'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="stack">
+                      <span className="metric-title">Alternate endpoints</span>
+                      {(activeDrone.endpoints?.length ? activeDrone.endpoints : [ensurePrimaryEndpoint(activeDrone)]).map(
+                        (endpoint, endpointIndex, endpointValues) => (
+                          <div className="endpoint-row" key={`${activeDrone.drone_id}-${endpointIndex}`}>
+                            <input
+                              value={endpoint}
+                              onChange={(event) =>
+                                setProfileField(activeProfile.profile_id, (profile) => ({
+                                  ...profile,
+                                  fleet: {
+                                    ...profile.fleet,
+                                    drones: profile.fleet.drones.map((entry) => {
+                                      if (entry.drone_id !== activeDrone.drone_id) {
+                                        return entry;
+                                      }
+
+                                      const nextEndpoints = [...(entry.endpoints ?? endpointValues)];
+                                      nextEndpoints[endpointIndex] = event.target.value;
+                                      return normalizeEndpoints(entry, nextEndpoints);
+                                    }),
+                                  },
+                                }))
+                              }
+                            />
                             <button
                               type="button"
                               className="ghost-button"
-                              onClick={() => deleteDrone(activeProfile.profile_id, drone.drone_id)}
-                              disabled={activeProfile.fleet.drones.length <= 1}
+                              onClick={() =>
+                                setProfileField(activeProfile.profile_id, (profile) => ({
+                                  ...profile,
+                                  fleet: {
+                                    ...profile.fleet,
+                                    drones: profile.fleet.drones.map((entry) => {
+                                      if (entry.drone_id !== activeDrone.drone_id) {
+                                        return entry;
+                                      }
+
+                                      const nextEndpoints = [...(entry.endpoints ?? endpointValues)];
+                                      nextEndpoints.splice(endpointIndex, 1);
+                                      return normalizeEndpoints(entry, nextEndpoints);
+                                    }),
+                                  },
+                                }))
+                              }
+                              disabled={endpointValues.length <= 1}
                             >
                               Remove
                             </button>
                           </div>
-                        </div>
-
-                        <div className="config-grid">
-                          <label className="field">
-                            <span>Drone ID</span>
-                            <input
-                              value={drone.drone_id}
-                              onChange={(event) =>
-                                setProfileField(activeProfile.profile_id, (profile) => {
-                                  const nextDroneId = event.target.value;
-                                  return {
-                                    ...profile,
-                                    selected_drone_id:
-                                      profile.selected_drone_id === drone.drone_id ? nextDroneId : profile.selected_drone_id,
-                                    fleet: {
-                                      ...profile.fleet,
-                                      drones: profile.fleet.drones.map((entry) =>
-                                        entry.drone_id === drone.drone_id ? { ...entry, drone_id: nextDroneId } : entry,
-                                      ),
-                                    },
-                                  };
-                                })
-                              }
-                            />
-                          </label>
-                          <label className="field">
-                            <span>Callsign</span>
-                            <input
-                              value={drone.callsign ?? ''}
-                              onChange={(event) =>
-                                setProfileField(activeProfile.profile_id, (profile) => ({
-                                  ...profile,
-                                  fleet: {
-                                    ...profile.fleet,
-                                    drones: profile.fleet.drones.map((entry) =>
-                                      entry.drone_id === drone.drone_id ? { ...entry, callsign: event.target.value } : entry,
-                                    ),
-                                  },
-                                }))
-                              }
-                            />
-                          </label>
-                          <label className="field">
-                            <span>Role</span>
-                            <input
-                              value={drone.role ?? ''}
-                              onChange={(event) =>
-                                setProfileField(activeProfile.profile_id, (profile) => ({
-                                  ...profile,
-                                  fleet: {
-                                    ...profile.fleet,
-                                    drones: profile.fleet.drones.map((entry) =>
-                                      entry.drone_id === drone.drone_id ? { ...entry, role: event.target.value } : entry,
-                                    ),
-                                  },
-                                }))
-                              }
-                            />
-                          </label>
-                          <label className="field">
-                            <span>Transport</span>
-                            <select
-                              value={drone.transport.type}
-                              onChange={(event) =>
-                                setProfileField(activeProfile.profile_id, (profile) => ({
-                                  ...profile,
-                                  fleet: {
-                                    ...profile.fleet,
-                                    drones: profile.fleet.drones.map((entry) =>
-                                      entry.drone_id === drone.drone_id
-                                        ? {
-                                            ...entry,
-                                            transport: {
-                                              ...entry.transport,
-                                              type: event.target.value as TransportKind,
-                                            },
-                                          }
-                                        : entry,
-                                    ),
-                                  },
-                                }))
-                              }
-                            >
-                              {['http', 'websocket', 'ipc', 'udp', 'mavlink', 'ble', 'native'].map((kind) => (
-                                <option key={kind} value={kind}>
-                                  {kind}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="field">
-                            <span>Companion endpoint</span>
-                            <input
-                              value={drone.transport.endpoint}
-                              onChange={(event) =>
-                                setProfileField(activeProfile.profile_id, (profile) => ({
-                                  ...profile,
-                                  fleet: {
-                                    ...profile.fleet,
-                                    drones: profile.fleet.drones.map((entry) =>
-                                      entry.drone_id === drone.drone_id
-                                        ? {
-                                            ...entry,
-                                            transport: {
-                                              ...entry.transport,
-                                              endpoint: event.target.value,
-                                            },
-                                            endpoints: [event.target.value, ...(entry.endpoints ?? []).slice(1)],
-                                          }
-                                        : entry,
-                                    ),
-                                  },
-                                }))
-                              }
-                            />
-                          </label>
-                          <label className="field">
-                            <span>Api Key</span>
-                            <input
-                              value={drone.transport.api_key ?? ''}
-                              onChange={(event) =>
-                                setProfileField(activeProfile.profile_id, (profile) => ({
-                                  ...profile,
-                                  fleet: {
-                                    ...profile.fleet,
-                                    drones: profile.fleet.drones.map((entry) =>
-                                      entry.drone_id === drone.drone_id
-                                        ? {
-                                            ...entry,
-                                            transport: {
-                                              ...entry.transport,
-                                              api_key: event.target.value,
-                                            },
-                                          }
-                                        : entry,
-                                    ),
-                                  },
-                                }))
-                              }
-                              placeholder="x-api-key"
-                              autoComplete="off"
-                              spellCheck={false}
-                            />
-                          </label>
-                          <label className="field">
-                            <span>Control token</span>
-                            <input
-                              value={drone.transport.control_token ?? ''}
-                              onChange={(event) =>
-                                setProfileField(activeProfile.profile_id, (profile) => ({
-                                  ...profile,
-                                  fleet: {
-                                    ...profile.fleet,
-                                    drones: profile.fleet.drones.map((entry) =>
-                                      entry.drone_id === drone.drone_id
-                                        ? {
-                                            ...entry,
-                                            transport: {
-                                              ...entry.transport,
-                                              control_token: event.target.value,
-                                            },
-                                          }
-                                        : entry,
-                                    ),
-                                  },
-                                }))
-                              }
-                              placeholder="x-control-token"
-                              autoComplete="off"
-                              spellCheck={false}
-                            />
-                          </label>
-                          <div className="field authority-field">
-                            <span>Control authority</span>
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => void onAcquireAuthority(activeProfile.profile_id, drone.drone_id)}
-                              disabled={saving || loading || acquiringAuthorityDroneId === drone.drone_id}
-                            >
-                              {acquiringAuthorityDroneId === drone.drone_id ? 'Acquiring...' : 'Acquire authority'}
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="stack">
-                          <span className="metric-title">Alternate endpoints</span>
-                          {endpointValues.map((endpoint, endpointIndex) => (
-                            <div className="endpoint-row" key={`${drone.drone_id}-${endpointIndex}`}>
-                              <input
-                                value={endpoint}
-                                onChange={(event) =>
-                                  setProfileField(activeProfile.profile_id, (profile) => ({
-                                    ...profile,
-                                    fleet: {
-                                      ...profile.fleet,
-                                      drones: profile.fleet.drones.map((entry) => {
-                                        if (entry.drone_id !== drone.drone_id) {
-                                          return entry;
-                                        }
-
-                                        const nextEndpoints = [...(entry.endpoints ?? endpointValues)];
-                                        nextEndpoints[endpointIndex] = event.target.value;
-                                        return normalizeEndpoints(entry, nextEndpoints);
-                                      }),
-                                    },
-                                  }))
+                        ),
+                      )}
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() =>
+                          setProfileField(activeProfile.profile_id, (profile) => ({
+                            ...profile,
+                            fleet: {
+                              ...profile.fleet,
+                              drones: profile.fleet.drones.map((entry) => {
+                                if (entry.drone_id !== activeDrone.drone_id) {
+                                  return entry;
                                 }
-                              />
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={() =>
-                                  setProfileField(activeProfile.profile_id, (profile) => ({
-                                    ...profile,
-                                    fleet: {
-                                      ...profile.fleet,
-                                      drones: profile.fleet.drones.map((entry) => {
-                                        if (entry.drone_id !== drone.drone_id) {
-                                          return entry;
-                                        }
 
-                                        const nextEndpoints = [...(entry.endpoints ?? endpointValues)];
-                                        nextEndpoints.splice(endpointIndex, 1);
-                                        return normalizeEndpoints(entry, nextEndpoints);
-                                      }),
-                                    },
-                                  }))
-                                }
-                                disabled={endpointValues.length <= 1}
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          ))}
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={() =>
-                              setProfileField(activeProfile.profile_id, (profile) => ({
-                                ...profile,
-                                fleet: {
-                                  ...profile.fleet,
-                                  drones: profile.fleet.drones.map((entry) => {
-                                    if (entry.drone_id !== drone.drone_id) {
-                                      return entry;
-                                    }
-
-                                    const nextEndpoints = [...(entry.endpoints ?? endpointValues), ''];
-                                    return normalizeEndpoints(entry, nextEndpoints);
-                                  }),
-                                },
-                              }))
-                            }
-                          >
-                            Add endpoint
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
+                                const nextEndpoints = [...(entry.endpoints ?? [ensurePrimaryEndpoint(activeDrone)]), ''];
+                                return normalizeEndpoints(entry, nextEndpoints);
+                              }),
+                            },
+                          }))
+                        }
+                      >
+                        Add endpoint
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 

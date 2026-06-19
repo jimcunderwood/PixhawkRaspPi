@@ -4,6 +4,7 @@ import { CalibrationHistoryPanel } from './components/CalibrationHistoryPanel';
 import { FleetPanel } from './components/FleetPanel';
 import { FarmTimelinePanel } from './components/FarmTimelinePanel';
 import { FlightLogTimelinePanel } from './components/FlightLogTimelinePanel';
+import { FlightPathPlannerScreen } from './components/FlightPathPlannerScreen';
 import { MissionEditor } from './components/MissionEditor';
 import { ShellStatusPanel } from './components/ShellStatusPanel';
 import { SwarmConfigEditor } from './components/SwarmConfigEditor';
@@ -19,6 +20,7 @@ import {
   loadCompanionSnapshot,
   loadFlightLogSyncHistory,
   loadGeoTiffPreview,
+  loadTelemetryCurrent,
   processPpkJob,
   replayFlightLogSyncBundle,
   saveBaseStation,
@@ -40,8 +42,10 @@ import type { DroneFleetEntry, DroneTransport, FleetConfig, TransportKind } from
 import {
   appendDraftWaypoint,
   createMissionRouteDraft,
+  type FlightPathParameters,
   loadStoredDraft,
   saveStoredDraft,
+  serializeFlightPathParameters,
   serializeMissionRouteExport,
   updateDraftBoundary,
   updateDraftWaypoints,
@@ -70,6 +74,17 @@ import type {
   MissionWaypoint,
 } from './types';
 import type { PpkJobStatus } from '../../../shared/types/base';
+
+const DEFAULT_COMPANION_REFRESH_INTERVAL_MS = 500;
+const MIN_COMPANION_REFRESH_INTERVAL_MS = 100;
+const MAX_COMPANION_REFRESH_INTERVAL_MS = 5000;
+const DEFAULT_FLIGHT_PATH_PARAMETERS: FlightPathParameters = {
+  altitude_m: 60,
+  speed_mps: 5,
+  swath_width_m: 12,
+  auto_optimize: true,
+  boundary_pass: 'after',
+};
 
 type AppProps = {
   defaultCompanionBaseUrl?: string;
@@ -105,6 +120,40 @@ function normalizeConnectionState(snapshot: CompanionSnapshot): ConnectionState 
   }
 
   return 'disconnected';
+}
+
+function telemetryToVehicle(telemetry?: CompanionSnapshot['telemetry']): CompanionSnapshot['vehicle'] | undefined {
+  if (!telemetry) {
+    return undefined;
+  }
+
+  const hasUsefulFields =
+    telemetry.armed !== undefined ||
+    telemetry.mode !== undefined ||
+    telemetry.ground_speed !== undefined ||
+    telemetry.air_speed !== undefined ||
+    telemetry.heading !== undefined ||
+    telemetry.location !== undefined ||
+    telemetry.battery !== undefined;
+
+  if (!hasUsefulFields) {
+    return undefined;
+  }
+
+  return {
+    armed: telemetry.armed,
+    mode: telemetry.mode,
+    ground_speed: telemetry.ground_speed,
+    air_speed: telemetry.air_speed,
+    heading: telemetry.heading,
+    battery: telemetry.battery,
+    location: telemetry.location,
+  };
+}
+
+function clampRefreshInterval(value?: number): number {
+  const candidate = Number.isFinite(value) ? Number(value) : DEFAULT_COMPANION_REFRESH_INTERVAL_MS;
+  return Math.max(MIN_COMPANION_REFRESH_INTERVAL_MS, Math.min(MAX_COMPANION_REFRESH_INTERVAL_MS, Math.round(candidate)));
 }
 
 function formatMeters(value?: number) {
@@ -423,6 +472,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [requiredSetupOpen, setRequiredSetupOpen] = useState(false);
   const [statusSnapshot, setStatusSnapshot] = useState<CompanionSnapshot>(mockSnapshot);
+  const [telemetrySnapshot, setTelemetrySnapshot] = useState<CompanionSnapshot['telemetry']>(mockSnapshot.telemetry);
   const [connectionState, setConnectionState] = useState<ConnectionState>('unknown');
   const [sourceLabel, setSourceLabel] = useState('mock data');
   const [refreshing, setRefreshing] = useState(true);
@@ -430,6 +480,9 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const [routeDraft, setRouteDraft] = useState(() =>
     loadStoredDraft(routeStorageKey) ?? createMissionRouteDraft('Draft route'),
   );
+  const [flightPathParameters, setFlightPathParameters] = useState(DEFAULT_FLIGHT_PATH_PARAMETERS);
+  const [plannerObstacles, setPlannerObstacles] = useState<Array<LatLngPoint & { radius_m?: number; label?: string }>>([]);
+  const [plannerMode, setPlannerMode] = useState<MissionEditorMode>('view');
   const [routeMessage, setRouteMessage] = useState('Ready');
   const [imageryOverlayUrl, setImageryOverlayUrl] = useState<string | undefined>();
   const [imageryStatus, setImageryStatus] = useState('no overlay loaded');
@@ -477,6 +530,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const userAuthenticated = Boolean(sessionState.authenticated && sessionState.user);
   const companionBaseUrl = userAuthenticated ? selectCompanionApiBase(activeRuntimeDrone, defaultCompanionBaseUrl) : undefined;
   const telemetryBaseUrl = userAuthenticated ? selectTelemetryBase(activeRuntimeDrone, companionBaseUrl) : undefined;
+  const telemetryRefreshIntervalMs = clampRefreshInterval(activeRuntimeDrone?.telemetry_refresh_interval_ms);
   const companionApiKey = useMemo(() => {
     return userAuthenticated ? activeRuntimeDrone?.transport.api_key?.trim() : undefined;
   }, [activeRuntimeDrone, userAuthenticated]);
@@ -642,13 +696,51 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
     const timer = window.setInterval(() => {
       void refresh();
-    }, 15000);
+    }, telemetryRefreshIntervalMs);
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [companionApiKey, companionBaseUrl, userAuthenticated]);
+  }, [companionApiKey, companionBaseUrl, telemetryRefreshIntervalMs, userAuthenticated]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshTelemetry() {
+      if (!userAuthenticated || !telemetryBaseUrl) {
+        setTelemetrySnapshot(mockSnapshot.telemetry);
+        return;
+      }
+
+      try {
+        const liveTelemetry = await loadTelemetryCurrent(companionApiKey || undefined, telemetryBaseUrl);
+        if (!cancelled) {
+          setTelemetrySnapshot(liveTelemetry ?? mockSnapshot.telemetry);
+        }
+      } catch {
+        if (!cancelled) {
+          setTelemetrySnapshot(mockSnapshot.telemetry);
+        }
+      }
+    }
+
+    void refreshTelemetry();
+    if (!userAuthenticated) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshTelemetry();
+    }, Math.max(100, Math.min(telemetryRefreshIntervalMs, 500)));
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [companionApiKey, telemetryBaseUrl, telemetryRefreshIntervalMs, userAuthenticated]);
 
   useEffect(() => {
     saveStoredDraft(routeStorageKey, routeDraft);
@@ -952,8 +1044,9 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     telemetryBaseUrl,
     statusSnapshot.telemetry ?? mockSnapshot.telemetry,
   );
-  const telemetry = telemetryStream.latest ?? statusSnapshot.telemetry ?? mockSnapshot.telemetry;
-  const vehicle = statusSnapshot.vehicle ?? mockSnapshot.vehicle;
+  const telemetry = telemetryStream.latest ?? telemetrySnapshot ?? statusSnapshot.telemetry ?? mockSnapshot.telemetry;
+  const liveVehicle = telemetryToVehicle(telemetryStream.latest);
+  const vehicle = liveVehicle ?? statusSnapshot.vehicle ?? mockSnapshot.vehicle;
   const readiness = statusSnapshot.readiness ?? mockSnapshot.readiness;
   const safety = statusSnapshot.safety ?? mockSnapshot.safety;
   const mission = statusSnapshot.mission ?? mockSnapshot.mission;
@@ -1027,6 +1120,15 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       ? [vehicle.location.latitude, vehicle.location.longitude]
       : [boundaryCenter.latitude, boundaryCenter.longitude];
   const surveyPreview = useMemo(() => buildSurveyPreview(boundaryDraft), [boundaryDraft]);
+  const plannerCoverage = useMemo(
+    () =>
+      plannerObstacles.map((obstacle, index) => ({
+        ...obstacle,
+        radius: (obstacle.radius_m ?? 3) * 10,
+        intensity: 0.18 + Math.min(index * 0.03, 0.2),
+      })),
+    [plannerObstacles],
+  );
   const breadcrumb = telemetryStream.samples;
   const coverageOverlay = useMemo(
     () => [
@@ -1075,7 +1177,9 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
                 altitude: livePosition.altitude,
                 heading: livePosition.heading,
               }
-            : index === 0 && vehicle?.location?.latitude !== undefined && vehicle.location.longitude !== undefined
+            : (fleetStatus?.self_drone_id === drone.drone_id || drone.drone_id === activeDroneId) &&
+                vehicle?.location?.latitude !== undefined &&
+                vehicle.location.longitude !== undefined
               ? {
                   latitude: vehicle.location.latitude,
                   longitude: vehicle.location.longitude,
@@ -1143,6 +1247,59 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
   function setWaypointPoints(points: MissionWaypoint[]) {
     setRouteDraft((current) => updateDraftWaypoints(current, points));
+  }
+
+  function generateFlightPath() {
+    if (boundaryDraft.length < 3) {
+      setRouteMessage('Add or import a boundary first');
+      return;
+    }
+
+    const latitudes = boundaryDraft.map((point) => point.latitude);
+    const longitudes = boundaryDraft.map((point) => point.longitude);
+    const minLat = Math.min(...latitudes);
+    const maxLat = Math.max(...latitudes);
+    const minLng = Math.min(...longitudes);
+    const maxLng = Math.max(...longitudes);
+    const spacing = Math.max(2, flightPathParameters.swath_width_m / 111111);
+    const nextWaypoints: MissionWaypoint[] = [];
+
+    let row = 0;
+    for (let latitude = minLat; latitude <= maxLat; latitude += spacing) {
+      const points = row % 2 === 0
+        ? [
+            { latitude, longitude: minLng, altitude: flightPathParameters.altitude_m },
+            { latitude, longitude: maxLng, altitude: flightPathParameters.altitude_m },
+          ]
+        : [
+            { latitude, longitude: maxLng, altitude: flightPathParameters.altitude_m },
+            { latitude, longitude: minLng, altitude: flightPathParameters.altitude_m },
+          ];
+      for (const point of points) {
+        nextWaypoints.push({
+          ...point,
+          id: `wp-${nextWaypoints.length + 1}`,
+          label: `WP-${String(nextWaypoints.length + 1).padStart(2, '0')}`,
+        });
+      }
+      row += 1;
+    }
+
+    setRouteDraft((current) => updateDraftWaypoints(current, nextWaypoints));
+    setRouteMessage(`Generated ${nextWaypoints.length} waypoints`);
+  }
+
+  function saveFlightPathParameters() {
+    const blob = new Blob([
+      serializeFlightPathParameters(routeDraft.name, flightPathParameters),
+    ], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${routeDraft.name.replace(/[^a-z0-9-_]+/gi, '-').toLowerCase() || 'mission-route'}.params.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setRouteMessage('Saved flight path parameters');
   }
 
   function saveRoute() {
@@ -1970,22 +2127,44 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         </section>
 
         <section className="bottom-grid">
-          <MissionEditor
-            mode={missionMode}
+          <FlightPathPlannerScreen
+            fleet={fleetConfig}
+            selectedDroneId={activeDroneId}
+            onSelectedDroneChange={selectDraftActiveDrone}
             boundary={boundaryDraft}
             waypoints={waypoints}
-            onModeChange={setMissionMode}
-            onClearBoundary={clearBoundary}
-            onClearWaypoints={clearWaypoints}
-            onUndoBoundaryPoint={removeLastBoundaryPoint}
-            onUndoWaypoint={removeLastWaypoint}
+            obstacles={plannerObstacles}
+            parameters={flightPathParameters}
             routeName={routeDraft.name}
+            mode={plannerMode}
+            onModeChange={setPlannerMode}
+            onBoundaryChange={setBoundaryPoints}
+            onWaypointsChange={setWaypointPoints}
+            onObstaclesChange={setPlannerObstacles}
             onRouteNameChange={(name) => setRouteDraft((current) => ({ ...current, name, updated_at: new Date().toISOString() }))}
+            onParametersChange={setFlightPathParameters}
+            onGeneratePath={generateFlightPath}
             onSaveRoute={saveRoute}
+            onSaveParameters={saveFlightPathParameters}
+            onLoadBoundary={loadRouteFromCompanion}
             onUploadRoute={uploadRouteToCompanion}
-            onDownloadRoute={downloadRoute}
-            onLoadRoute={loadRouteFromCompanion}
             routeStatus={routeMessage}
+            missionHint="Draw or import a boundary, add obstacles, then auto-optimize the route."
+            vehicle={
+              telemetry?.location?.latitude !== undefined && telemetry.location.longitude !== undefined
+                ? {
+                    latitude: telemetry.location.latitude,
+                    longitude: telemetry.location.longitude,
+                    altitude: telemetry.location.altitude,
+                    heading: telemetry.heading,
+                  }
+                : undefined
+            }
+            breadcrumb={telemetryStream.samples as any}
+            surveyPreview={surveyPreview}
+            coverage={plannerCoverage}
+            activeDroneId={activeDroneId}
+            onSelectDrone={selectDraftActiveDrone}
           />
 
           <FleetPanel

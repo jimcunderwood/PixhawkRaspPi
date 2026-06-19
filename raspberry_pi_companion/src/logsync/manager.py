@@ -153,6 +153,7 @@ class FlightLogSyncManager:
         manifest = self._write_manifest(bundle_dir, session_name, reason, pixhawk_files, companion_files)
         archive_path = self._create_archive(bundle_dir, manifest)
         upload_result = self._upload_archive(archive_path, manifest)
+        self._enforce_storage_budget()
         self._prune_session_archives(bundle_dir.parent)
 
         return {
@@ -166,6 +167,50 @@ class FlightLogSyncManager:
             "upload": upload_result,
             "updated_at": time.time(),
         }
+
+    def cleanup_all(self) -> Dict:
+        removed = {
+            "archives": 0,
+            "bundle_directories": 0,
+            "other_files": 0,
+        }
+
+        if not self.base_directory.exists():
+            return {"removed": removed}
+
+        for path in sorted(self.base_directory.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+            try:
+                if path.is_file():
+                    if path.suffix.lower() == ".zip":
+                        removed["archives"] += 1
+                    else:
+                        removed["other_files"] += 1
+                    path.unlink()
+                elif path.is_dir() and path != self.base_directory:
+                    shutil.rmtree(path, ignore_errors=False)
+                    removed["bundle_directories"] += 1
+            except OSError as e:
+                logger.warning("Failed to remove flight log path %s: %s", path, str(e))
+
+        return {"removed": removed}
+
+    def download_archive(self, archive_path: Optional[str] = None) -> Path:
+        if archive_path:
+            candidate = Path(archive_path)
+            if not candidate.is_absolute():
+                candidate = self.base_directory / candidate
+            if not candidate.is_file() or candidate.suffix.lower() != ".zip":
+                matches = [path for path in self.base_directory.rglob(candidate.name) if path.is_file() and path.suffix.lower() == ".zip"]
+                if len(matches) == 1:
+                    candidate = matches[0]
+                else:
+                    raise FileNotFoundError(f"Flight log archive not found: {archive_path}")
+            return candidate
+
+        archives = self._list_archives()
+        if not archives:
+            raise FileNotFoundError("No flight log archives are available.")
+        return archives[-1]
 
     def _session_name(self) -> str:
         active_session = getattr(self.payload_controller, "active_spray_session", None)
@@ -380,3 +425,68 @@ class FlightLogSyncManager:
                 candidate.unlink()
             except OSError as e:
                 logger.warning("Failed to prune flight log archive %s: %s", candidate, str(e))
+
+    def _list_archives(self) -> List[Path]:
+        if not self.base_directory.is_dir():
+            return []
+
+        archives = [
+            candidate
+            for candidate in self.base_directory.rglob("*.zip")
+            if candidate.is_file()
+        ]
+        archives.sort(key=lambda candidate: (str(candidate.parent), candidate.name))
+        return archives
+
+    def _directory_size_bytes(self) -> int:
+        total = 0
+        if not self.base_directory.exists():
+            return total
+        for path in self.base_directory.rglob("*"):
+            if path.is_file():
+                try:
+                    total += path.stat().st_size
+                except OSError:
+                    continue
+        return total
+
+    def _enforce_storage_budget(self):
+        max_fraction = max(0.0, min(1.0, float(getattr(self.storage_config, "flight_log_max_drive_fraction", 0.5))))
+        if max_fraction <= 0.0 or not self.base_directory.exists():
+            return
+
+        try:
+            usage = shutil.disk_usage(self.base_directory)
+        except OSError as e:
+            logger.warning("Unable to determine flight log disk usage: %s", str(e))
+            return
+
+        budget_bytes = int(usage.total * max_fraction)
+        current_bytes = self._directory_size_bytes()
+        if current_bytes <= budget_bytes:
+            return
+
+        for archive_path in self._list_archives():
+            if current_bytes <= budget_bytes:
+                break
+            try:
+                current_bytes -= archive_path.stat().st_size
+                archive_path.unlink()
+                self._cleanup_empty_parents(archive_path.parent)
+            except OSError as e:
+                logger.warning("Failed to prune flight log archive %s: %s", archive_path, str(e))
+
+    def _cleanup_empty_parents(self, start_path: Path):
+        current = start_path
+        while current != self.base_directory and current.is_dir():
+            try:
+                next(current.iterdir())
+                return
+            except StopIteration:
+                try:
+                    current.rmdir()
+                except OSError:
+                    return
+                current = current.parent
+            except OSError:
+                return

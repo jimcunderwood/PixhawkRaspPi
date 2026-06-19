@@ -12,6 +12,7 @@ export {
   loadPrescriptionMaps,
   loadPrescriptionStatus,
   processPpkJob,
+  loadTelemetryCurrent,
   replayFlightLogSyncBundle,
   saveBaseStation,
   syncAgLeader,

@@ -230,6 +230,18 @@ export async function loadCompanionSnapshot(
   };
 }
 
+export async function loadTelemetryCurrent(
+  apiKey?: string,
+  baseUrl?: string,
+): Promise<TelemetrySnapshot | undefined> {
+  try {
+    const payload = await requestJson<{ data?: TelemetrySnapshot }>('/api/telemetry/current', { apiKey, baseUrl });
+    return extractData(payload);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function loadFlightLogSyncHistory(
   apiKey?: string,
   baseUrl?: string,

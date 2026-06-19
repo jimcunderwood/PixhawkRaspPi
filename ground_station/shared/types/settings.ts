@@ -11,6 +11,7 @@ export type GroundStationDroneProfile = Omit<DroneFleetEntry, 'transport'> & {
     channel?: string;
   };
   endpoints?: string[];
+  telemetry_refresh_interval_ms?: number;
 };
 
 export type GroundStationRuntimeProfile = {

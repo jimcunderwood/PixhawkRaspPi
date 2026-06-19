@@ -300,6 +300,7 @@ class StorageConfig:
         "FLIGHT_LOG_DIRECTORY",
         os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "flight-logs"),
     )
+    flight_log_max_drive_fraction: float = float(os.getenv("FLIGHT_LOG_MAX_DRIVE_FRACTION", "0.5"))
     flight_log_backup_count: int = int(os.getenv("FLIGHT_LOG_BACKUP_COUNT", "10"))
     flight_log_download_limit: int = int(os.getenv("FLIGHT_LOG_DOWNLOAD_LIMIT", "10"))
     flight_log_sync_delay_seconds: float = float(os.getenv("FLIGHT_LOG_SYNC_DELAY_SECONDS", "5"))

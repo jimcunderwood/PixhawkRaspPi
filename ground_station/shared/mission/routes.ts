@@ -11,6 +11,14 @@ export type MissionRouteDraft = {
   updated_at: string;
 };
 
+export type FlightPathParameters = {
+  altitude_m: number;
+  speed_mps: number;
+  swath_width_m: number;
+  auto_optimize: boolean;
+  boundary_pass: 'none' | 'before' | 'after';
+};
+
 export type MissionUploadResult = {
   boundary_uploaded: boolean;
   waypoint_count: number;
@@ -95,4 +103,16 @@ export function buildMissionRouteExport(draft: MissionRouteDraft, fleet?: FleetC
 
 export function serializeMissionRouteExport(draft: MissionRouteDraft, fleet?: FleetConfig): string {
   return JSON.stringify(buildMissionRouteExport(draft, fleet), null, 2);
+}
+
+export function serializeFlightPathParameters(name: string, parameters: FlightPathParameters): string {
+  return JSON.stringify(
+    {
+      name,
+      parameters,
+      updated_at: nowIso(),
+    },
+    null,
+    2,
+  );
 }
