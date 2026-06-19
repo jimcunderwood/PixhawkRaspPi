@@ -1,5 +1,11 @@
 # Ground Station Installation
 
+Invariant:
+
+- Companion and Ground Station are separate installs and separate runtime targets.
+- Ground Station depends on at least one Companion being available.
+- Any install, config, docs, or code changes for Ground Station assume the Companion exists on another machine or service, not bundled inside it.
+
 The ground station is a web application, so "installation" means either:
 
 - running the Vite dev server locally on Linux, macOS, or Windows
@@ -8,10 +14,10 @@ The ground station is a web application, so "installation" means either:
 - wrapping the same web build in the Capacitor mobile shell
 
 The web UI reads the companion URL at runtime, so you can point one ground
-station build at different companion hosts without rebuilding. When the app is
-served by the built-in Node server, it also exposes a SQLite-backed login and
-settings API so each user can keep separate runtime profiles and per-drone
-connection endpoints.
+station build at a reachable Companion on another machine or service without
+rebuilding. When the app is served by the built-in Node server, it also
+exposes a SQLite-backed login and settings API so each user can keep separate
+runtime profiles and per-drone connection endpoints.
 
 ## Prerequisites
 
@@ -39,7 +45,8 @@ sudo apt update
 sudo apt install -y git curl
 ```
 
-Install Node.js 20+ with your preferred method, then:
+Install Node.js 20+ with your preferred method, then point the UI at a
+reachable Companion:
 
 ```bash
 cd PixhawkRaspPi/ground_station/apps/web
@@ -123,15 +130,15 @@ Node.js install.
 - `http://192.168.1.50:8000` for a Pi on the LAN
 - `http://10.0.0.12:8000` for a remote field network
 
-If `COMPANION_BASE_URL` is not set, the UI falls back to the bundled mock
-state so the dashboard still opens without a live companion.
+If `COMPANION_BASE_URL` is not set, the UI can still render the bundled mock
+state for local development, but that is not the supported operator runtime.
 
 Use full URLs in both runtime configuration and per-drone settings:
 
 | Setting | Example URL | Where It Goes |
 | --- | --- | --- |
 | Companion REST/API base | `http://192.168.1.50:8000` | `COMPANION_BASE_URL` and the drone `Companion endpoint` field |
-| Local companion REST/API base | `http://localhost:8000` | Local development only |
+| Local companion REST/API base | `http://localhost:8000` | Only when a separate Companion install is listening on the same machine |
 | Telemetry WebSocket | `ws://192.168.1.50:8000/ws/telemetry` | Drone alternate endpoints when you want an explicit telemetry URL |
 | Events WebSocket | `ws://192.168.1.50:8000/ws/events` | Drone alternate endpoints or future event tooling |
 | Secure companion REST/API base | `https://companion.example.com` | Use when the companion is behind HTTPS/TLS |

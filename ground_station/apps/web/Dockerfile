@@ -17,13 +17,13 @@ FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 
 ENV GROUND_STATION_HOST=0.0.0.0
-ENV GROUND_STATION_PORT=80
+ENV GROUND_STATION_PORT=8080
 ENV GROUND_STATION_SHELL_LABEL=web
 ENV COMPANION_BASE_URL=
 ENV API_KEY=
 
 COPY --from=build /workspace/ground_station/apps/web /app
 
-EXPOSE 80
+EXPOSE 8080
 
 CMD ["node", "server.mjs"]

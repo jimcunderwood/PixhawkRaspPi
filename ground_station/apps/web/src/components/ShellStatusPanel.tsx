@@ -21,7 +21,7 @@ export function ShellStatusPanel({
         tone={runtimeConfig?.shellLabel ? 'good' : 'neutral'}
       />
       <p className="hint">
-        The same shared dashboard code powers web, Electron desktop, and Capacitor mobile shells.
+        The same shared dashboard code powers web, Electron desktop, and Capacitor mobile shells, while each shell connects to a separate Companion runtime.
       </p>
     </div>
   );

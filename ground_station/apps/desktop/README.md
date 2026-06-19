@@ -1,13 +1,19 @@
 # Ground Station Desktop
 
+Invariant:
+
+- Companion and Ground Station are separate installs and separate runtime targets.
+- Ground Station depends on at least one Companion being available.
+- Any install, config, docs, or code changes for Ground Station assume the Companion exists on another machine or service, not bundled inside it.
+
 Electron wrapper for the shared ground station web app.
 
 This shell serves the built web bundle locally and injects the runtime
 `COMPANION_BASE_URL` value into `/runtime-config.json`, so the desktop app can
-point at a Pi companion or a LAN-hosted companion without rebuilding. The
-desktop shell also runs the shared settings server with a local SQLite
-database, which lets each signed-in user keep their own runtime profiles and
-drone connection endpoints.
+point at a reachable Companion on another machine or service without
+rebuilding. The desktop shell also runs the shared settings server with a local
+SQLite database, which lets each signed-in user keep their own runtime profiles
+and drone connection endpoints.
 
 ## Local Development
 

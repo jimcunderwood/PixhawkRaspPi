@@ -398,7 +398,7 @@ function validateRequiredSettings(settings: GroundStationUserSettings): Settings
     issues.push({ field: 'Transport', message: 'Select a transport type.' });
   }
   if (!drone.transport?.endpoint?.trim()) {
-    issues.push({ field: 'Companion endpoint', message: 'Enter the companion endpoint with a protocol, such as http://192.168.1.50:8000.' });
+    issues.push({ field: 'Companion endpoint', message: 'Enter the endpoint for a Companion running on another machine or service, such as http://192.168.1.50:8000.' });
   } else if (!endpointLooksUsable(drone.transport.endpoint)) {
     issues.push({ field: 'Companion endpoint', message: 'Use a full URL with http://, https://, ws://, wss://, or udp://.' });
   }

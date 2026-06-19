@@ -2,6 +2,12 @@
 
 Python application for Raspberry Pi 4 connected to Pixhawk 4 flight controller.
 
+Invariant:
+
+- Companion and Ground Station are separate installs and separate runtime targets.
+- Ground Station depends on at least one Companion being available.
+- Any install, config, docs, or code changes for Ground Station assume the Companion exists on another machine or service, not bundled inside it.
+
 ## Features
 
 - **MAVLink Communication**: Full MAVLink v2 protocol support for drone control
@@ -115,7 +121,7 @@ source venv/bin/activate
 python main.py
 ```
 
-The companion exposes the live API that the ground station uses at runtime,
+The companion exposes the live API that a separate ground station uses at runtime,
 including weather, obstacle-scan, swarm, calibration, farm integration, and
 flight-log sync history/replay state.
 

@@ -2,9 +2,16 @@
 
 Complete implementation of a Raspberry Pi 4 companion computer for Pixhawk 4 flight controller.
 
+The repository contains two separate deliverables:
+
+- `raspberry_pi_companion/` is the Companion install and runtime target.
+- `ground_station/` is the Ground Station install and runtime target.
+
+Ground Station depends on at least one Companion being available on another machine or service. The Ground Station is not bundled with a Companion runtime.
+
 The repository now also includes a reusable ground station web app, a mobile
 wrapper, and documentation for running the operator UI on Linux, macOS,
-Windows, or Docker.
+Windows, or Docker against a reachable Companion.
 
 **Status**: ✅ COMPLETE - Production Ready
 
@@ -128,7 +135,7 @@ See `QUICKSTART.md` for detailed instructions.
 
 ## Docker
 
-The repository includes a Docker path for both services:
+The repository includes separate Docker paths for both services:
 
 ```bash
 # Companion on the Pi
@@ -140,7 +147,7 @@ docker compose --profile ground-station up -d
 
 If the ground station and companion run on different hosts, set
 `COMPANION_BASE_URL` for the ground-station profile or the web UI container so
-it points at the companion's reachable address.
+it points at the Companion's reachable address on another machine or service.
 
 For a separate ground-station install, copy the companion `API_KEY` into
 `ground_station/apps/web/.env` on the ground-station machine. That key becomes

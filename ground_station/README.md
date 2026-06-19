@@ -2,6 +2,12 @@
 
 Shared client workspace for the drone ground station application.
 
+Invariant:
+
+- Companion and Ground Station are separate installs and separate runtime targets.
+- Ground Station depends on at least one Companion being available.
+- Any install, config, docs, or code changes for Ground Station assume the Companion exists on another machine or service, not bundled inside it.
+
 This layout is designed for one codebase that can target:
 
 - Web
@@ -14,7 +20,7 @@ It is also designed to support:
 - Multiple drones in a single swarm or fleet view
 - Per-drone connection profiles, capabilities, and health state
 - Platform-specific shells that stay thin while shared logic stays reusable
-- Companion runtime discovery so the UI can move between hosts without a rebuild
+- Companion runtime discovery so the UI can target a reachable Companion without a rebuild
 
 ## Installation
 
@@ -49,7 +55,7 @@ ground_station/
 - The mobile shell lives in `apps/mobile/` and wraps the same web bundle through Capacitor.
 - Shared mission planning, telemetry parsing, and companion API helpers live under `shared/` so desktop and mobile shells can reuse the same behavior without duplicate logic.
 - Shared UI atoms and reusable panels live under `packages/ui/`; platform shells should compose those instead of re-implementing common status/metric widgets.
-- Runtime companion discovery is shared across shells so web, desktop, and mobile can point at the same Pi without rebuilding.
+- Runtime companion discovery is shared across shells so web, desktop, and mobile can point at the same reachable Companion without rebuilding.
 - Route save/load/upload should be implemented against the shared mission helpers first, then consumed by web, desktop, and mobile shells from the same code path.
 - Shell parity is a first-class goal: the same runtime status, map, and workflow panels should be reachable from web, desktop, and mobile.
 - Calibration history, farm report timelines, and flight-log replay history should stay visible in the operator dashboard for quick validation.
@@ -94,10 +100,11 @@ To run the web UI with Docker Compose:
 docker compose --profile ground-station up -d
 ```
 
-The same Compose file can run the companion on a Pi and the web UI on a
-separate workstation. The ground-station profile reads
-`ground_station/apps/web/.env`, so copy that file from the example and set
-`COMPANION_BASE_URL` and `API_KEY` before first startup.
+The same Compose file can run the companion profile on one machine and the
+ground-station profile on another. Treat them as separate installs: the
+ground-station profile reads `ground_station/apps/web/.env`, so copy that file
+from the example and set `COMPANION_BASE_URL` to the reachable Companion on
+another machine or service, plus `API_KEY`, before first startup.
 
 ## Connection URL Examples
 
