@@ -3,6 +3,7 @@ export type TransportKind = 'http' | 'websocket' | 'ipc' | 'udp' | 'mavlink' | '
 export type DroneTransport = {
   type: TransportKind;
   endpoint: string;
+  api_key?: string;
   path?: string;
   channel?: string;
 };

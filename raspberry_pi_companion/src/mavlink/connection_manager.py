@@ -47,6 +47,8 @@ class ConnectionManager:
         self._monitor_active = False
         self._reconnect_backoff_seconds = 1.0
         self._max_reconnect_backoff_seconds = 30.0
+        self._has_connected_once = False
+        self._last_reconnect_attempt_at = None
         self._callbacks = {}
         self._lock = threading.Lock()
         self._prearm_messages = deque(maxlen=20)
@@ -122,6 +124,7 @@ class ConnectionManager:
             self._register_distance_sensor_listener()
             logger.info("Successfully connected to Pixhawk")
             self.connected = True
+            self._has_connected_once = True
             self._connection_last_error = None
             self._set_connection_state("connected")
             self._reconnect_backoff_seconds = 1.0
@@ -137,10 +140,12 @@ class ConnectionManager:
             logger.error(f"Failed to connect to Pixhawk: {str(e)}")
             self.connected = False
             self._connection_last_error = str(e)
-            if start_monitor and self._monitor_active:
+            if start_monitor or self._monitor_active:
                 self._set_connection_state("reconnecting")
             else:
                 self._set_connection_state("offline")
+            if start_monitor and not self._monitor_active:
+                self._start_monitor_thread()
             return False
 
     def disconnect(self):
@@ -180,6 +185,11 @@ class ConnectionManager:
 
     def get_connection_status(self) -> dict:
         """Return the current Pixhawk link state for API clients."""
+        next_retry_in_seconds = 0.0
+        if self._connection_state == "reconnecting" and self._last_reconnect_attempt_at is not None:
+            elapsed = time.time() - self._last_reconnect_attempt_at
+            next_retry_in_seconds = max(0.0, self._reconnect_backoff_seconds - elapsed)
+
         return {
             "state": self._connection_state,
             "connected": bool(self.connected),
@@ -189,6 +199,8 @@ class ConnectionManager:
             if self._connection_state == "reconnecting"
             else 0.0,
             "max_retry_backoff_seconds": self._max_reconnect_backoff_seconds,
+            "next_retry_in_seconds": next_retry_in_seconds,
+            "last_reconnect_attempt_at": self._last_reconnect_attempt_at,
             "last_changed_at": self._connection_state_changed_at,
             "last_error": self._connection_last_error,
         }
@@ -337,6 +349,7 @@ class ConnectionManager:
                     break
 
                 self._set_connection_state("reconnecting")
+                self._last_reconnect_attempt_at = time.time()
                 if self.connect(start_monitor=False):
                     logger.info("Reconnected to Pixhawk")
                     self._reconnect_backoff_seconds = 1.0
@@ -346,19 +359,20 @@ class ConnectionManager:
                 self._reconnect_backoff_seconds = min(
                     self._reconnect_backoff_seconds * 2,
                     self._max_reconnect_backoff_seconds,
-                )
+                ) if self._has_connected_once else 1.0
                 self._set_connection_state("reconnecting")
             except Exception as e:
                 logger.warning(f"Connection health check failed: {str(e)}")
                 self._disconnect_vehicle(cleanup_obstacle=False)
                 self._trigger_callback('disconnected')
                 self._set_connection_state("reconnecting", error=str(e))
+                self._last_reconnect_attempt_at = time.time()
                 if self._monitor_stop_event.wait(self._reconnect_backoff_seconds):
                     break
                 self._reconnect_backoff_seconds = min(
                     self._reconnect_backoff_seconds * 2,
                     self._max_reconnect_backoff_seconds,
-                )
+                ) if self._has_connected_once else 1.0
 
     def _vehicle_connection_healthy(self) -> bool:
         if not self.vehicle:

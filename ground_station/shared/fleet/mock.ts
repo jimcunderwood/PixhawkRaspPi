@@ -11,6 +11,7 @@ export const mockFleetConfig: FleetConfig = {
       transport: {
         type: 'websocket',
         endpoint: 'ws://192.168.1.50:9001',
+        api_key: '',
       },
       endpoints: ['ws://192.168.1.50:9001', 'http://192.168.1.50:8000'],
       capabilities: ['arm', 'takeoff', 'land', 'mission', 'telemetry'],
@@ -24,6 +25,7 @@ export const mockFleetConfig: FleetConfig = {
       transport: {
         type: 'udp',
         endpoint: 'udp://192.168.1.51:14550',
+        api_key: '',
       },
       endpoints: ['udp://192.168.1.51:14550'],
       capabilities: ['mission', 'telemetry'],

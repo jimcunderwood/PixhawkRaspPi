@@ -1,82 +1,14 @@
-import { createServer } from 'node:http';
-import { extname, resolve } from 'node:path';
-import { readFile, stat } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { app, BrowserWindow } from 'electron';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const webDistDirectory = resolve(__dirname, '../web/dist');
+const webAppDirectory = resolve(__dirname, '../web');
+const webDistDirectory = resolve(webAppDirectory, 'dist');
+const defaultPort = Number(process.env.GROUND_STATION_DESKTOP_PORT || 4173);
 const host = '127.0.0.1';
-const port = Number(process.env.GROUND_STATION_DESKTOP_PORT || 4173);
 
-const contentTypes = {
-  '.css': 'text/css; charset=utf-8',
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.txt': 'text/plain; charset=utf-8',
-};
-
-function runtimeConfigPayload() {
-  return JSON.stringify(
-    {
-      companionBaseUrl: process.env.COMPANION_BASE_URL?.trim() || undefined,
-      shellLabel: 'desktop',
-    },
-    null,
-    2,
-  );
-}
-
-async function serveFile(response, pathname) {
-  const safePath = pathname === '/' ? '/index.html' : pathname;
-  const filePath = resolve(webDistDirectory, `.${safePath}`);
-  const webRoot = resolve(webDistDirectory);
-  if (!filePath.startsWith(webRoot)) {
-    response.writeHead(403);
-    response.end('Forbidden');
-    return;
-  }
-
-  if (safePath === '/runtime-config.json') {
-    response.writeHead(200, { 'content-type': contentTypes['.json'] });
-    response.end(runtimeConfigPayload());
-    return;
-  }
-
-  try {
-    const fileStat = await stat(filePath);
-    if (fileStat.isDirectory()) {
-      await serveFile(response, '/index.html');
-      return;
-    }
-
-    const extension = extname(filePath).toLowerCase();
-    const contentType = contentTypes[extension] || 'application/octet-stream';
-    response.writeHead(200, { 'content-type': contentType });
-    response.end(await readFile(filePath));
-  } catch {
-    if (safePath === '/index.html') {
-      response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-      response.end('Build the web app first: npm --prefix ../web run build');
-      return;
-    }
-    await serveFile(response, '/index.html');
-  }
-}
-
-async function startStaticServer() {
-  return new Promise((resolveServer, rejectServer) => {
-    const server = createServer((request, response) => {
-      const url = new URL(request.url || '/', `http://${host}:${port}`);
-      void serveFile(response, url.pathname);
-    });
-
-    server.on('error', rejectServer);
-    server.listen(port, host, () => resolveServer(server));
-  });
-}
+let serverHandle;
 
 async function createWindow() {
   const window = new BrowserWindow({
@@ -94,13 +26,24 @@ async function createWindow() {
     },
   });
 
-  await window.loadURL(`http://${host}:${port}`);
+  await window.loadURL(`http://${host}:${defaultPort}`);
 }
 
-let server;
+async function startServer() {
+  const { startGroundStationServer } = await import('../web/server.mjs');
+  return startGroundStationServer({
+    host,
+    port: defaultPort,
+    distDir: webDistDirectory,
+    dataDir: process.env.GROUND_STATION_DATA_DIRECTORY || resolve(app.getPath('userData'), 'ground-station'),
+    shellLabel: 'desktop',
+    companionBaseUrl: process.env.COMPANION_BASE_URL?.trim(),
+    sqlJsModuleUrl: pathToFileURL(resolve(__dirname, './node_modules/sql.js/dist/sql-wasm.js')).href,
+  });
+}
 
 app.whenReady().then(async () => {
-  server = await startStaticServer();
+  serverHandle = await startServer();
   await createWindow();
 
   app.on('activate', async () => {
@@ -111,15 +54,15 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
-  if (server) {
-    server.close();
+  if (serverHandle) {
+    void serverHandle.close();
   }
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    if (server) {
-      server.close();
+    if (serverHandle) {
+      void serverHandle.close();
     }
     app.quit();
   }

@@ -50,8 +50,13 @@ echo "Installing system dependencies..."
 # Enable serial interface for Pixhawk communication (Raspberry Pi only)
 if command -v raspi-config &> /dev/null; then
     echo "Enabling serial interface..."
-    "${SUDO[@]}" raspi-config nonint do_serial_hw 0
-    "${SUDO[@]}" raspi-config nonint do_serial_console 1
+    if ! "${SUDO[@]}" raspi-config nonint do_serial_hw 0; then
+        echo "Warning: could not enable UART hardware through raspi-config."
+    fi
+    if ! "${SUDO[@]}" raspi-config nonint do_serial_cons 1; then
+        echo "Warning: could not disable serial console through raspi-config."
+        echo "Continuing setup; you may need to disable the console manually if the Pixhawk uses serial0."
+    fi
 else
     echo "Skipping serial interface setup (not on Raspberry Pi)"
 fi
@@ -71,18 +76,47 @@ pip install -r requirements.txt
 
 # Fix dronekit Python 3.10+ compatibility issue
 echo "Patching dronekit for Python 3.10+..."
-DRONEKIT_PATH=$(python -c "import dronekit; import os; print(os.path.dirname(dronekit.__file__))")
-if [ -f "$DRONEKIT_PATH/__init__.py" ]; then
-    sed -i 's/collections\.MutableMapping/collections.abc.MutableMapping/g' "$DRONEKIT_PATH/__init__.py"
-    echo "dronekit patched successfully"
+DRONEKIT_PATH=$(
+    python - <<'PY'
+import glob
+import os
+import sysconfig
+
+candidates = []
+for key in ("purelib", "platlib"):
+    base = sysconfig.get_paths().get(key)
+    if base:
+        candidates.extend(glob.glob(os.path.join(base, "dronekit", "__init__.py")))
+
+for candidate in candidates:
+    if os.path.isfile(candidate):
+        print(candidate)
+        break
+PY
+)
+if [ -n "$DRONEKIT_PATH" ] && [ -f "$DRONEKIT_PATH" ]; then
+    sed -i \
+        -e 's/collections\.MutableMapping/collections.abc.MutableMapping/g' \
+        -e 's/collections\.Mapping/collections.abc.Mapping/g' \
+        -e 's/collections\.Iterable/collections.abc.Iterable/g' \
+        -e 's/collections\.Sequence/collections.abc.Sequence/g' \
+        "$DRONEKIT_PATH"
+    echo "dronekit patched successfully at $DRONEKIT_PATH"
+else
+    echo "Warning: could not locate dronekit for compatibility patching."
+fi
+
+if [ "${INSTALL_SYSTEMD_SERVICE:-1}" != "0" ] && [ -x "./install_service.sh" ]; then
+    echo "Installing and enabling the drone-companion systemd service..."
+    sudo ./install_service.sh
 fi
 
 echo "=== Installation Complete ==="
 echo ""
 echo "Next steps:"
-echo "1. Copy .env.example to .env and configure settings"
+echo "1. Copy .env.example to .env and configure settings if needed"
 echo "2. Run: source venv/bin/activate"
 echo "3. Run: python main.py"
-echo "4. Install to /opt and enable boot startup: sudo ./install_service.sh"
+echo "4. Re-run ./setup.sh with INSTALL_SYSTEMD_SERVICE=1 to install boot startup"
 echo ""
 echo "For more systemd service details, see docs/SETUP.md"

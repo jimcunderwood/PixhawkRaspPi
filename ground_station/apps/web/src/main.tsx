@@ -7,11 +7,11 @@ import { loadRuntimeConfig, resolveCompanionBaseUrl } from './runtimeConfig';
 
 async function bootstrap() {
   const runtimeConfig = await loadRuntimeConfig();
-  const companionBaseUrl = resolveCompanionBaseUrl(runtimeConfig);
+  const defaultCompanionBaseUrl = resolveCompanionBaseUrl(runtimeConfig);
 
   ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <React.StrictMode>
-      <App companionBaseUrl={companionBaseUrl} runtimeConfig={runtimeConfig} />
+      <App defaultCompanionBaseUrl={defaultCompanionBaseUrl} runtimeConfig={runtimeConfig} />
     </React.StrictMode>,
   );
 }

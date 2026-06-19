@@ -4,6 +4,7 @@ import {
   Circle,
   ImageOverlay,
   LayersControl,
+  MapContainer,
   Marker,
   Pane,
   Polygon,

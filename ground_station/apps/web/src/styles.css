@@ -51,7 +51,9 @@ body::before {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -144,6 +146,77 @@ button {
   margin-top: 16px;
 }
 
+.sidebar-accordion {
+  display: grid;
+  gap: 12px;
+}
+
+.sidebar-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sidebar-panel-head h3 {
+  margin-top: 2px;
+  font-size: 1rem;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-panel .settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-panel .settings-drone-list {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-panel .settings-drone-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(4, 9, 16, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settings-panel .settings-drone-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-panel .settings-drone-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-panel .profile-drone-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-panel .sidebar-panel-head {
+  align-items: center;
+}
+
+.endpoint-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
 .panel-label {
   display: block;
   color: var(--muted);
@@ -171,7 +244,10 @@ button {
   color: var(--muted);
 }
 
-.field input {
+.field input,
+.field select,
+.field textarea,
+.endpoint-row input {
   width: 100%;
   border: 1px solid var(--border);
   background: rgba(4, 9, 16, 0.6);
@@ -181,7 +257,10 @@ button {
   outline: none;
 }
 
-.field input:focus {
+.field input:focus,
+.field select:focus,
+.field textarea:focus,
+.endpoint-row input:focus {
   border-color: rgba(255, 176, 0, 0.6);
   box-shadow: 0 0 0 3px rgba(255, 176, 0, 0.14);
 }
@@ -764,6 +843,17 @@ button {
   .metric-grid,
   .config-grid,
   .editor-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-panel .endpoint-row,
+  .settings-panel .settings-drone-head,
+  .settings-panel .profile-drone-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-panel .endpoint-row {
     grid-template-columns: 1fr;
   }
 

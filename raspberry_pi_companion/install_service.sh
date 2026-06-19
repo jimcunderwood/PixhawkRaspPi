@@ -24,9 +24,13 @@ elif ! sudo -n true 2>/dev/null; then
 fi
 
 if [ ! -f "${SOURCE_DIR}/.env" ]; then
-    echo "Missing ${SOURCE_DIR}/.env"
-    echo "Copy .env.example to .env and configure it before enabling the service."
-    exit 1
+    if [ -f "${SOURCE_DIR}/.env.example" ]; then
+        echo "Missing ${SOURCE_DIR}/.env; creating it from .env.example so the service can boot."
+        cp "${SOURCE_DIR}/.env.example" "${SOURCE_DIR}/.env"
+    else
+        echo "Missing ${SOURCE_DIR}/.env and .env.example."
+        exit 1
+    fi
 fi
 
 echo "Installing ${SERVICE_NAME} from ${SOURCE_DIR} to ${APP_DIR}"
@@ -62,9 +66,13 @@ if [ ! -x "${APP_DIR}/venv/bin/python" ]; then
 fi
 
 if [ ! -f "${APP_DIR}/.env" ]; then
-    echo "Missing ${APP_DIR}/.env after install copy."
-    echo "Copy .env.example to .env and configure it before enabling the service."
-    exit 1
+    if [ -f "${APP_DIR}/.env.example" ]; then
+        echo "Missing ${APP_DIR}/.env after install copy; creating it from .env.example."
+        "${SUDO[@]}" cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
+    else
+        echo "Missing ${APP_DIR}/.env and .env.example after install copy."
+        exit 1
+    fi
 fi
 
 if ! getent group "${SERVICE_USER}" >/dev/null; then

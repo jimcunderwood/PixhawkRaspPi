@@ -2457,6 +2457,10 @@ class ServerAPI:
         async def health_check():
             return self._build_health_payload()
 
+        @self.app.get("/api/health", tags=["System"], include_in_schema=False, deprecated=True)
+        async def api_health_check():
+            return self._build_health_payload()
+
         @self.app.get(
             "/info",
             response_model=StatusResponse,
@@ -2470,11 +2474,39 @@ class ServerAPI:
             )
 
         @self.app.get(
+            "/api/system/info",
+            response_model=StatusResponse,
+            tags=["System"],
+            include_in_schema=False,
+            deprecated=True,
+        )
+        async def legacy_system_info():
+            return StatusResponse(
+                status="success",
+                message="System information retrieved.",
+                data=self._build_system_info_payload(),
+            )
+
+        @self.app.get(
             "/v1/info",
             response_model=StatusResponse,
             tags=["System"],
         )
         async def v1_system_info():
+            return StatusResponse(
+                status="success",
+                message="System information retrieved.",
+                data=self._build_system_info_payload(),
+            )
+
+        @self.app.get(
+            "/api/v1/system/info",
+            response_model=StatusResponse,
+            tags=["System"],
+            include_in_schema=False,
+            deprecated=True,
+        )
+        async def legacy_v1_system_info():
             return StatusResponse(
                 status="success",
                 message="System information retrieved.",
@@ -2619,11 +2651,49 @@ class ServerAPI:
             )
 
         @self.app.get(
+            "/api/readiness",
+            response_model=StatusResponse,
+            tags=["System"],
+            include_in_schema=False,
+            deprecated=True,
+        )
+        async def legacy_readiness_check():
+            readiness_data = self._get_readiness_data()
+            blockers = readiness_data.get("checks", {}).get("blocking_reasons", [])
+            message = "Readiness checks completed."
+            if blockers:
+                message = f"{message} {blockers[0]}"
+            return StatusResponse(
+                status="success",
+                message=message,
+                data=readiness_data,
+            )
+
+        @self.app.get(
             "/v1/readiness",
             response_model=StatusResponse,
             tags=["System"],
         )
         async def v1_readiness_check():
+            readiness_data = self._get_readiness_data()
+            blockers = readiness_data.get("checks", {}).get("blocking_reasons", [])
+            message = "Readiness checks completed."
+            if blockers:
+                message = f"{message} {blockers[0]}"
+            return StatusResponse(
+                status="success",
+                message=message,
+                data=readiness_data,
+            )
+
+        @self.app.get(
+            "/api/v1/readiness",
+            response_model=StatusResponse,
+            tags=["System"],
+            include_in_schema=False,
+            deprecated=True,
+        )
+        async def legacy_v1_readiness_check():
             readiness_data = self._get_readiness_data()
             blockers = readiness_data.get("checks", {}).get("blocking_reasons", [])
             message = "Readiness checks completed."

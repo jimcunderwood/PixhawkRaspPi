@@ -19,9 +19,13 @@ services:
       dockerfile: ground_station/apps/web/Dockerfile
     environment:
       COMPANION_BASE_URL: ${COMPANION_BASE_URL:-}
+      GROUND_STATION_DATA_DIRECTORY: /var/lib/ground-station
     ports:
       - "8080:80"
+    volumes:
+      - ground-station-data:/var/lib/ground-station
     restart: unless-stopped
 
 volumes:
   companion-data:
+  ground-station-data:

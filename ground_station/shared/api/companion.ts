@@ -97,7 +97,7 @@ export function buildWebSocketUrl(baseUrl: string | undefined, path: string, api
 }
 
 export function getCompanionBaseLabel(baseUrl?: string): string {
-  return baseUrl?.trim() || 'same-origin';
+  return baseUrl?.trim() || 'not configured';
 }
 
 async function requestJson<T>(
@@ -106,7 +106,6 @@ async function requestJson<T>(
 ): Promise<T> {
   const response = await fetch(buildUrl(options.baseUrl, path), {
     headers: {
-      'content-type': 'application/json',
       ...(options.apiKey ? { 'x-api-key': options.apiKey } : {}),
       ...(options.controlToken ? { 'x-control-token': options.controlToken } : {}),
     },
@@ -196,8 +195,14 @@ export async function loadCompanionSnapshot(
     requestJson<{ data?: SwarmCoordinationStatus }>('/api/swarm/coordination', { apiKey, baseUrl }),
   ]);
 
+  const healthValue =
+    health.status === 'fulfilled' &&
+    (health.value.data?.connected !== undefined || health.value.data?.api_ready !== undefined)
+      ? health.value
+      : undefined;
+
   return {
-    health: health.status === 'fulfilled' ? health.value : undefined,
+    health: healthValue,
     vehicle: vehicle.status === 'fulfilled' ? extractData(vehicle.value) : undefined,
     readiness: readiness.status === 'fulfilled' ? extractData(readiness.value) : undefined,
     safety: safety.status === 'fulfilled' ? extractData(safety.value) : undefined,

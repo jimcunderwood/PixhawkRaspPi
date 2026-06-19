@@ -34,7 +34,17 @@ Python application for Raspberry Pi 4 connected to Pixhawk 4 flight controller.
 
 ## Installation
 
-### 1. Clone the repository
+### Option 1: Install from a GitHub release
+
+If you want to test on another Pi without cloning the full repository, publish
+the archive created by `package_companion_release.sh` as a GitHub Release
+asset and run the bootstrap installer from the repo root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jimcunderwood/PixhawkRaspPi/main/install_companion.sh | bash
+```
+
+### Option 2: Clone the repository
 ```bash
 git clone <repository-url>
 cd raspberry_pi_companion

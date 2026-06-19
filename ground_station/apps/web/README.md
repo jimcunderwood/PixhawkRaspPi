@@ -19,6 +19,7 @@ For OS-specific install steps and Docker usage, see
 - Prescription and variable-rate task state are shown alongside the mission view
 - RTK/PPK calibration, farm export/report, flight-log replay, and swarm coordination workflows are wired into the operator dashboard
 - The shell status panel shows the current runtime, companion target, and whether the shell is running in web, desktop, or mobile mode
+- Signed-in users can store runtime profiles in SQLite-backed settings, including per-profile companion URLs and per-drone connection endpoints
 
 ## Companion API integration
 
@@ -31,10 +32,20 @@ Example:
 COMPANION_BASE_URL=http://192.168.1.20:8000
 ```
 
-The Docker image reads that value at startup and writes `/runtime-config.json`,
-so the UI can be moved to a different host without rebuilding.
+The Docker image reads that value at startup and serves `/runtime-config.json`,
+so the UI can be moved to a different host without rebuilding. The same server
+also persists user settings in SQLite so each operator can keep their own
+runtime profiles.
 
 The app will try the companion first and fall back to the bundled mock snapshot if the API is unavailable.
+
+After signing in, use the user settings panel to edit:
+
+- the active profile
+- the companion URL for that profile
+- the per-drone transport type
+- the per-drone endpoint list
+- the active drone inside the current profile
 
 ## Local Development
 

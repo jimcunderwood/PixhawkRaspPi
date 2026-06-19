@@ -67,6 +67,8 @@ class FakeConnectionManager:
             "reconnecting": False,
             "retry_backoff_seconds": 0.0,
             "max_retry_backoff_seconds": 30.0,
+            "next_retry_in_seconds": 0.0,
+            "last_reconnect_attempt_at": None,
             "last_changed_at": 1234567890.0,
             "last_error": None,
         }
@@ -956,6 +958,8 @@ def test_health_and_readiness_expose_pixhawk_connection_state(server_api, monkey
             "reconnecting": True,
             "retry_backoff_seconds": 4.0,
             "max_retry_backoff_seconds": 30.0,
+            "next_retry_in_seconds": 2.5,
+            "last_reconnect_attempt_at": 1234567888.0,
             "last_changed_at": 1234567890.0,
             "last_error": "heartbeat timeout",
         },
@@ -968,23 +972,39 @@ def test_health_and_readiness_expose_pixhawk_connection_state(server_api, monkey
             "/health",
             "GET",
         )
+        legacy_health_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/health",
+            "GET",
+        )
         readiness_endpoint = get_route_endpoint(
             server_api.get_app(),
             "/readiness",
             "GET",
         )
+        legacy_readiness_endpoint = get_route_endpoint(
+            server_api.get_app(),
+            "/api/readiness",
+            "GET",
+        )
         health_response = await health_endpoint()
+        legacy_health_response = await legacy_health_endpoint()
         readiness_response = await readiness_endpoint()
-        return health_response, readiness_response
+        legacy_readiness_response = await legacy_readiness_endpoint()
+        return health_response, legacy_health_response, readiness_response, legacy_readiness_response
 
-    health_response, readiness_response = asyncio.run(exercise_routes())
+    health_response, legacy_health_response, readiness_response, legacy_readiness_response = asyncio.run(exercise_routes())
 
     assert health_response["status"] == "degraded"
     assert health_response["message"] == "Pi is running, but Pixhawk is not connected."
     assert health_response["pixhawk_connection"]["state"] == "reconnecting"
     assert health_response["pixhawk_connection_state"] == "reconnecting"
+    assert health_response["pixhawk_connection"]["next_retry_in_seconds"] == 2.5
+    assert health_response["pixhawk_connection"]["last_reconnect_attempt_at"] == 1234567888.0
+    assert legacy_health_response["status"] == "degraded"
     assert readiness_response.data["checks"]["pixhawk_connection"]["state"] == "reconnecting"
     assert "Pixhawk is reconnecting." in readiness_response.data["checks"]["blocking_reasons"]
+    assert legacy_readiness_response.data["checks"]["pixhawk_connection"]["state"] == "reconnecting"
 
 
 def test_payload_record_start_uses_session_video_path(server_api, monkeypatch, tmp_path):
@@ -1355,6 +1375,10 @@ def test_client_bootstrap_and_mission_edit_routes_are_documented(server_api):
     assert "/v1/info" in paths
     assert "/readiness" in paths
     assert "/v1/readiness" in paths
+    assert "/api/system/info" not in paths
+    assert "/api/v1/system/info" not in paths
+    assert "/api/readiness" not in paths
+    assert "/api/v1/readiness" not in paths
     assert "/api/system/audit" in paths
     assert "/api/v1/system/audit" in paths
     assert "/api/config/calibration" in paths

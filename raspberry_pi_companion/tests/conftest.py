@@ -1,10 +1,67 @@
 import sys
 import time
+import importlib.util
+import subprocess
 from pathlib import Path
+import site
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CORE_MAVLINK_REQUIREMENTS = (
+    "dronekit>=2.9.2",
+    "pymavlink>=2.4.49",
+    "future>=0.18.2",
+    "pyserial>=3.5",
+)
+
+_VENV_SITE_PACKAGES = sorted(
+    REPO_ROOT.joinpath("venv", "lib").glob("python*/site-packages")
+)
+for site_packages in _VENV_SITE_PACKAGES:
+    if site_packages.is_dir() and str(site_packages) not in sys.path:
+        site.addsitedir(str(site_packages))
+
+def _module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+def _install_missing_test_dependencies() -> None:
+    if _module_available("dronekit") and _module_available("pymavlink"):
+        return
+
+    python_candidates = [REPO_ROOT / "venv" / "bin" / "python", Path(sys.executable)]
+    installer = next((candidate for candidate in python_candidates if candidate.exists()), None)
+    if installer is None:
+        raise RuntimeError("Unable to locate a Python interpreter to install test dependencies.")
+
+    install_args = [
+        str(installer),
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+        *CORE_MAVLINK_REQUIREMENTS,
+    ]
+
+    try:
+        subprocess.run(install_args, cwd=str(REPO_ROOT), check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "Failed to install missing test dependencies. "
+            "Make sure network access is available or create the repo venv first."
+        ) from exc
+
+    for site_packages in _VENV_SITE_PACKAGES:
+        if site_packages.is_dir() and str(site_packages) not in sys.path:
+            site.addsitedir(str(site_packages))
+
+
+_install_missing_test_dependencies()
+
 from src.missions.planner import FieldBoundary, GeoPoint, MissionPlanner
 from src.telemetry.collector import TelemetryManager
 from src.telemetry.database import TelemetryDatabase, TelemetryDatabaseConfig
@@ -26,6 +83,8 @@ class RouteConnectionManager:
             "reconnecting": False,
             "retry_backoff_seconds": 0.0,
             "max_retry_backoff_seconds": 30.0,
+            "next_retry_in_seconds": 0.0,
+            "last_reconnect_attempt_at": None,
             "last_changed_at": 1_700_000_000.0,
             "last_error": None,
         }

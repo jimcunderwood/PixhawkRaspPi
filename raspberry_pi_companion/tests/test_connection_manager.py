@@ -106,6 +106,7 @@ def test_monitor_thread_reconnects_without_spawning_a_new_monitor(monkeypatch):
     assert manager.connected is True
     assert manager.vehicle is reconnected_vehicle
     assert manager._reconnect_backoff_seconds == 1.0
+    assert manager.get_connection_status()["next_retry_in_seconds"] == 0.0
     assert manager._monitor_stop_event.wait_calls == [1.0]
     assert callback_events == ["disconnected", "connected"]
     assert cleanup_calls == []
@@ -115,6 +116,7 @@ def test_monitor_thread_doubles_backoff_after_failed_reconnect(monkeypatch):
     manager = _build_manager()
     manager.vehicle = FakeVehicle(last_heartbeat=999.0)
     manager.connected = True
+    manager._has_connected_once = True
 
     reconnect_attempts = []
     cleanup_calls = []
@@ -154,3 +156,106 @@ def test_monitor_thread_doubles_backoff_after_failed_reconnect(monkeypatch):
     assert manager._reconnect_backoff_seconds == 1.0
     assert manager._monitor_stop_event.wait_calls == [1.0, 2.0]
     assert cleanup_calls == []
+
+
+def test_failed_initial_connect_starts_reconnect_monitor(monkeypatch):
+    manager = _build_manager()
+    manager._monitor_active = False
+
+    start_monitor_calls = []
+
+    def fake_start_monitor_thread(self):
+        start_monitor_calls.append(True)
+        self._monitor_active = True
+
+    monkeypatch.setattr(ConnectionManager, "_start_monitor_thread", fake_start_monitor_thread)
+
+    def fake_connect(*args, **kwargs):
+        raise RuntimeError("Pixhawk not present")
+
+    monkeypatch.setattr("src.mavlink.connection_manager.connect", fake_connect)
+
+    assert manager.connect() is False
+    assert manager.connected is False
+    assert manager.get_connection_status()["state"] == "reconnecting"
+    assert start_monitor_calls == [True]
+
+
+def test_monitor_thread_recovers_after_startup_failure_when_pixhawk_appears(monkeypatch):
+    manager = _build_manager()
+    manager.vehicle = None
+    manager.connected = False
+
+    callback_events = []
+
+    monkeypatch.setattr(
+        ConnectionManager,
+        "_vehicle_connection_healthy",
+        lambda self: False,
+    )
+    monkeypatch.setattr(
+        ConnectionManager,
+        "_trigger_callback",
+        lambda self, event, data=None: callback_events.append(event),
+    )
+
+    def fake_connect(self, start_monitor=True):
+        assert start_monitor is False
+        self.vehicle = FakeVehicle(last_heartbeat=0.1)
+        self.connected = True
+        self._connection_last_error = None
+        self._set_connection_state("connected")
+        self._monitor_stop_event.set()
+        return True
+
+    monkeypatch.setattr(ConnectionManager, "connect", fake_connect)
+
+    manager._monitor_connection()
+
+    assert manager.connected is True
+    assert manager.vehicle is not None
+    assert manager.get_connection_status()["state"] == "connected"
+    assert manager.get_connection_status()["next_retry_in_seconds"] == 0.0
+    assert manager._monitor_stop_event.wait_calls == [1.0]
+    assert callback_events == []
+
+
+def test_monitor_thread_keeps_fast_retry_until_first_success(monkeypatch):
+    manager = _build_manager()
+    manager.vehicle = None
+    manager.connected = False
+
+    reconnect_attempts = []
+
+    monkeypatch.setattr(
+        ConnectionManager,
+        "_vehicle_connection_healthy",
+        lambda self: False,
+    )
+    monkeypatch.setattr(
+        ConnectionManager,
+        "_trigger_callback",
+        lambda self, event, data=None: None,
+    )
+
+    def fake_connect(self, start_monitor=True):
+        assert start_monitor is False
+        reconnect_attempts.append(self._reconnect_backoff_seconds)
+        if len(reconnect_attempts) < 3:
+            return False
+        self.vehicle = FakeVehicle(last_heartbeat=0.1)
+        self.connected = True
+        self._connection_last_error = None
+        self._set_connection_state("connected")
+        self._monitor_stop_event.set()
+        return True
+
+    monkeypatch.setattr(ConnectionManager, "connect", fake_connect)
+
+    manager._monitor_connection()
+
+    assert reconnect_attempts == [1.0, 1.0, 1.0]
+    assert manager._reconnect_backoff_seconds == 1.0
+    assert manager._monitor_stop_event.wait_calls == [1.0, 1.0, 1.0]
+    assert manager.get_connection_status()["state"] == "connected"
+    assert manager.get_connection_status()["next_retry_in_seconds"] == 0.0

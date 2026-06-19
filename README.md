@@ -145,6 +145,36 @@ it points at the companion's reachable address.
 See [ground_station/docs/INSTALLATION.md](ground_station/docs/INSTALLATION.md)
 for the full OS-specific install guide for the operator UI.
 
+## Companion Install
+
+For a Raspberry Pi companion-only install, you do not need to clone the full
+repository. Publish the archive created by `package_companion_release.sh` as a
+GitHub Release asset, then point users at the bootstrap installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jimcunderwood/PixhawkRaspPi/main/install_companion.sh | bash
+```
+
+You can also test a local archive on another Pi:
+
+```bash
+./install_companion.sh ./dist/drone-companion-<version>.tar.gz
+```
+
+## Ground Station Profiles
+
+The ground station UI now includes per-user login and profile storage. Each
+signed-in user can keep:
+
+- multiple runtime profiles
+- a companion URL per profile
+- per-drone transport dropdowns
+- editable endpoint lists for each drone
+
+Web and desktop shells persist those settings in SQLite on the host serving the
+UI. Mobile uses the same UI and profile model when it is pointed at the hosted
+ground-station web server.
+
 ---
 
 ## 🎯 Core Features

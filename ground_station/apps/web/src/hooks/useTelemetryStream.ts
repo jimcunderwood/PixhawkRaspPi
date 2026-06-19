@@ -39,6 +39,13 @@ export function useTelemetryStream(
   }, [seedSample, samples.length]);
 
   useEffect(() => {
+    if (!companionBaseUrl) {
+      setState('offline');
+      return () => {
+        // no websocket connection to maintain
+      };
+    }
+
     let alive = true;
     let socket: WebSocket | undefined;
     let reconnectTimer: number | undefined;

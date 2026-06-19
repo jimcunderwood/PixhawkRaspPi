@@ -8,7 +8,10 @@ The ground station is a web application, so "installation" means either:
 - wrapping the same web build in the Capacitor mobile shell
 
 The web UI reads the companion URL at runtime, so you can point one ground
-station build at different companion hosts without rebuilding.
+station build at different companion hosts without rebuilding. When the app is
+served by the built-in Node server, it also exposes a SQLite-backed login and
+settings API so each user can keep separate runtime profiles and per-drone
+connection endpoints.
 
 ## Prerequisites
 
@@ -61,6 +64,10 @@ Run it with a runtime env file:
 cp ground_station/apps/web/.env.example ground_station/apps/web/.env
 docker run --rm -p 8080:80 --env-file ground_station/apps/web/.env ground-station-web
 ```
+
+The first time you open the app, create a user in the sidebar. That user’s
+runtime profiles and drone connections are stored in the SQLite database under
+the configured ground-station data directory.
 
 ## macOS
 
@@ -147,6 +154,10 @@ npm run dev
 
 Set `COMPANION_BASE_URL` before launching if you want the desktop shell to talk
 to a live companion instance.
+
+The desktop shell stores the same per-user settings in the Electron user-data
+directory by default, so multiple operators on the same machine can keep
+separate profiles.
 
 ## Mobile Shell
 

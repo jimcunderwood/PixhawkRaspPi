@@ -8,6 +8,7 @@ import { MissionEditor } from './components/MissionEditor';
 import { ShellStatusPanel } from './components/ShellStatusPanel';
 import { SwarmConfigEditor } from './components/SwarmConfigEditor';
 import { TelemetryCharts } from './components/TelemetryCharts';
+import { UserSettingsPanel } from './components/UserSettingsPanel';
 import { mockSnapshot } from './data/mockState';
 import { useTelemetryStream } from './hooks/useTelemetryStream';
 import {
@@ -45,6 +46,19 @@ import {
   updateDraftBoundary,
   updateDraftWaypoints,
 } from '../../../shared/mission/routes';
+import {
+  createDefaultUserSettings,
+  type GroundStationLoginRequest,
+  type GroundStationSessionState,
+  type GroundStationUserSettings,
+} from '../../../shared/types/settings';
+import {
+  loadSession as loadSettingsSession,
+  loadUserSettings,
+  login as loginUser,
+  logout as logoutUser,
+  saveUserSettings,
+} from '../../../shared/api/settings';
 import { buildSurveyPreview, computePolygonCenter } from '../../../shared/mission/planning';
 import { detectShellContext } from './lib/shell';
 import type { RuntimeConfig } from './runtimeConfig';
@@ -59,7 +73,7 @@ import type {
 import type { PpkJobStatus } from '../../../shared/types/base';
 
 type AppProps = {
-  companionBaseUrl?: string;
+  defaultCompanionBaseUrl?: string;
   runtimeConfig?: RuntimeConfig;
 };
 
@@ -157,11 +171,38 @@ function computeOverlayBounds(points: Array<LatLngPoint>, center: [number, numbe
   ] as [[number, number], [number, number]];
 }
 
-function App({ companionBaseUrl, runtimeConfig }: AppProps) {
+function cloneSettings(settings: GroundStationUserSettings): GroundStationUserSettings {
+  return JSON.parse(JSON.stringify(settings)) as GroundStationUserSettings;
+}
+
+function cloneFleetConfig(fleet: typeof mockFleetConfig) {
+  return JSON.parse(JSON.stringify(fleet)) as typeof mockFleetConfig;
+}
+
+function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const routeStorageKey = 'ground-station.route-draft.v1';
   const geotiffInputRef = useRef<HTMLInputElement | null>(null);
   const prescriptionInputRef = useRef<HTMLInputElement | null>(null);
-  const [apiKey, setApiKey] = useState('');
+  const defaultSettings = useMemo(
+    () =>
+      createDefaultUserSettings(
+        undefined,
+        'pilot',
+        'Pilot',
+        cloneFleetConfig(mockFleetConfig),
+        defaultCompanionBaseUrl,
+      ),
+    [defaultCompanionBaseUrl],
+  );
+  const [sessionState, setSessionState] = useState<GroundStationSessionState>({
+    authenticated: false,
+    has_users: false,
+  });
+  const [appliedSettings, setAppliedSettings] = useState<GroundStationUserSettings>(defaultSettings);
+  const [settingsDraft, setSettingsDraft] = useState<GroundStationUserSettings>(defaultSettings);
+  const [settingsMessage, setSettingsMessage] = useState('Sign in to load per-user connection profiles.');
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [statusSnapshot, setStatusSnapshot] = useState<CompanionSnapshot>(mockSnapshot);
   const [connectionState, setConnectionState] = useState<ConnectionState>('unknown');
   const [sourceLabel, setSourceLabel] = useState('mock data');
@@ -176,8 +217,6 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
   const [geotiffAssetId, setGeotiffAssetId] = useState<string | undefined>();
   const [geotiffStatus, setGeotiffStatus] = useState('no GeoTIFF loaded');
   const [geotiffBounds, setGeotiffBounds] = useState<[[number, number], [number, number]] | undefined>();
-  const [activeDroneId, setActiveDroneId] = useState(mockFleetConfig.drones[0]?.drone_id);
-  const [fleetConfig] = useState(mockFleetConfig);
   const [controlToken, setControlToken] = useState('');
   const [authorityStatus, setAuthorityStatus] = useState('not requested');
   const [prescriptionMessage, setPrescriptionMessage] = useState('no prescription loaded');
@@ -185,6 +224,14 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
   const [farmMessage, setFarmMessage] = useState('farm integrations idle');
   const [flightLogMessage, setFlightLogMessage] = useState('flight log history not loaded');
   const [flightLogBundles, setFlightLogBundles] = useState<FlightLogSyncHistoryEntry[]>([]);
+  const [sidebarSections, setSidebarSections] = useState({
+    drones: true,
+    connection: true,
+    mission: true,
+    shell: true,
+    session: true,
+    settings: true,
+  });
   const shellContext = useMemo(() => detectShellContext(), []);
   const [baseStationDraft, setBaseStationDraft] = useState({
     station_id: 'base-01',
@@ -198,17 +245,113 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
     mount_type: 'tripod',
     notes: '',
   });
+  const activeProfile = useMemo(() => {
+    const current =
+      appliedSettings.profiles.find((profile) => profile.profile_id === appliedSettings.active_profile_id) ??
+      appliedSettings.profiles[0];
+    return current ?? defaultSettings.profiles[0];
+  }, [appliedSettings, defaultSettings.profiles]);
+  const draftProfile = useMemo(() => {
+    const current =
+      settingsDraft.profiles.find((profile) => profile.profile_id === settingsDraft.active_profile_id) ??
+      settingsDraft.profiles[0];
+    return current ?? defaultSettings.profiles[0];
+  }, [defaultSettings.profiles, settingsDraft]);
+  const companionBaseUrl = activeProfile?.companion_base_url?.trim() || defaultCompanionBaseUrl;
+  const fleetConfig = activeProfile?.fleet ?? mockFleetConfig;
+  const companionApiKey = useMemo(() => {
+    const selectedDrone =
+      activeProfile?.fleet.drones.find((drone) => drone.drone_id === activeProfile.selected_drone_id) ??
+      activeProfile?.fleet.drones[0];
+    return selectedDrone?.transport.api_key?.trim();
+  }, [activeProfile]);
+  const activeDroneId = draftProfile?.selected_drone_id ?? fleetConfig.drones[0]?.drone_id;
+
+  function toggleSidebarSection(section: keyof typeof sidebarSections) {
+    setSidebarSections((current) => ({
+      ...current,
+      [section]: !current[section],
+    }));
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function bootstrapSettings() {
+      setSettingsLoading(true);
+      try {
+        const session = await loadSettingsSession();
+        if (cancelled) {
+          return;
+        }
+
+        if (!session?.authenticated || !session.user) {
+          setSessionState(session ?? { authenticated: false, has_users: false });
+          setAppliedSettings(defaultSettings);
+          setSettingsDraft(defaultSettings);
+          setSettingsMessage(session?.has_users ? 'Sign in to manage stored profiles.' : 'Create the first user to enable per-user settings.');
+          return;
+        }
+
+        let saved = session.settings ?? (await loadUserSettings());
+        if (!saved) {
+          saved = createDefaultUserSettings(
+            session.user.user_id,
+            session.user.username,
+            session.user.display_name ?? session.user.username,
+            cloneFleetConfig(mockFleetConfig),
+            defaultCompanionBaseUrl,
+          );
+          const created = await saveUserSettings(saved);
+          if (created) {
+            saved = created;
+          }
+        }
+
+        if (!cancelled) {
+          setSessionState({ ...session, settings: saved });
+          setAppliedSettings(saved);
+          setSettingsDraft(cloneSettings(saved));
+          setSettingsMessage(`Signed in as ${session.user.display_name ?? session.user.username}`);
+        }
+      } catch {
+        if (!cancelled) {
+          setSessionState({ authenticated: false, has_users: false });
+          setAppliedSettings(defaultSettings);
+          setSettingsDraft(defaultSettings);
+          setSettingsMessage('Settings service unavailable; sign in will be enabled when the local API is reachable.');
+        }
+      } finally {
+        if (!cancelled) {
+          setSettingsLoading(false);
+        }
+      }
+    }
+
+    void bootstrapSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [defaultCompanionBaseUrl, defaultSettings]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function refresh() {
+      if (!companionBaseUrl) {
+        setStatusSnapshot(mockSnapshot);
+        setConnectionState('disconnected');
+        setSourceLabel('mock data');
+        setFlightLogBundles([]);
+        setFlightLogMessage('flight log history unavailable');
+        setRefreshing(false);
+        return;
+      }
+
       setRefreshing(true);
       try {
-        const live = await loadCompanionSnapshot(
-          apiKey || undefined,
-          companionBaseUrl,
-        );
+        const live = await loadCompanionSnapshot(companionApiKey || undefined, companionBaseUrl);
         if (cancelled) {
           return;
         }
@@ -233,13 +376,13 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
           swarm_coordination: live.swarm_coordination ?? mockSnapshot.swarm_coordination,
         } as CompanionSnapshot;
 
-        const logBundles = await loadFlightLogSyncHistory(apiKey || undefined, companionBaseUrl);
+        const logBundles = await loadFlightLogSyncHistory(companionApiKey || undefined, companionBaseUrl);
 
         setStatusSnapshot(merged);
         setFlightLogBundles(logBundles);
         setFlightLogMessage(logBundles.length ? `Loaded ${logBundles.length} flight log bundle(s)` : 'No flight log bundles yet');
         setConnectionState(normalizeConnectionState(merged));
-        setSourceLabel(apiKey ? 'companion api' : 'local mock + api fallback');
+        setSourceLabel(companionApiKey ? 'companion api' : 'local mock + api fallback');
       } catch {
         if (!cancelled) {
           setStatusSnapshot(mockSnapshot);
@@ -265,7 +408,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [apiKey, companionBaseUrl]);
+  }, [companionApiKey, companionBaseUrl]);
 
   useEffect(() => {
     saveStoredDraft(routeStorageKey, routeDraft);
@@ -279,8 +422,96 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
     };
   }, [imageryOverlayUrl]);
 
+  async function handleLogin(request: GroundStationLoginRequest) {
+    setSettingsLoading(true);
+    try {
+      const session = await loginUser(request);
+      if (!session?.authenticated || !session.user) {
+        setSettingsMessage('Login failed. Check the username and password.');
+        return;
+      }
+
+      let saved = session.settings ?? (await loadUserSettings());
+      if (!saved) {
+        saved = createDefaultUserSettings(
+          session.user.user_id,
+          session.user.username,
+          session.user.display_name ?? session.user.username,
+          cloneFleetConfig(mockFleetConfig),
+          defaultCompanionBaseUrl,
+        );
+        const created = await saveUserSettings(saved);
+        if (created) {
+          saved = created;
+        }
+      }
+
+      setSessionState({ ...session, settings: saved });
+      setAppliedSettings(saved);
+      setSettingsDraft(cloneSettings(saved));
+      setSettingsMessage(`Signed in as ${session.user.display_name ?? session.user.username}`);
+    } catch (error) {
+      setSettingsMessage(`Login failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    setSettingsLoading(true);
+    try {
+      await logoutUser();
+      setSessionState({ authenticated: false, has_users: sessionState.has_users });
+      setAppliedSettings(defaultSettings);
+      setSettingsDraft(defaultSettings);
+      setSettingsMessage('Signed out. Log back in to restore saved profiles.');
+    } catch (error) {
+      setSettingsMessage(`Sign out failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
+  async function handleSaveSettings() {
+    setSettingsSaving(true);
+    try {
+      const saved = await saveUserSettings(settingsDraft);
+      if (!saved) {
+        throw new Error('settings save failed');
+      }
+
+      setAppliedSettings(cloneSettings(saved));
+      setSettingsDraft(cloneSettings(saved));
+      setSessionState((current) => ({
+        ...current,
+        authenticated: true,
+        has_users: true,
+        settings: saved,
+      }));
+      setSettingsMessage('Saved user settings and applied the active profile.');
+    } catch (error) {
+      setSettingsMessage(`Save failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  function selectDraftActiveDrone(droneId: string) {
+    setSettingsDraft((current) => ({
+      ...current,
+      profiles: current.profiles.map((profile) =>
+        profile.profile_id === current.active_profile_id
+          ? {
+              ...profile,
+              selected_drone_id: droneId,
+            }
+          : profile,
+      ),
+    }));
+  }
+
   const telemetryStream = useTelemetryStream(
-    apiKey || undefined,
+    companionApiKey || undefined,
     companionBaseUrl,
     statusSnapshot.telemetry ?? mockSnapshot.telemetry,
   );
@@ -499,7 +730,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
     if (!tokenToUse) {
       const authority = await acquireControlAuthority(
         companionBaseUrl,
-        apiKey || undefined,
+        companionApiKey || undefined,
         `gs-${routeStorageKey}`,
         'ground-station',
       );
@@ -518,8 +749,8 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
   async function loadRouteFromCompanion() {
     try {
       const [missionState, boundaries] = await Promise.all([
-        loadMissionState(companionBaseUrl, apiKey || undefined),
-        loadFieldBoundaries(companionBaseUrl, apiKey || undefined),
+        loadMissionState(companionBaseUrl, companionApiKey || undefined),
+        loadFieldBoundaries(companionBaseUrl, companionApiKey || undefined),
       ]);
       const waypointEntries = missionState?.waypoints ?? [];
       const nextBoundary =
@@ -570,14 +801,14 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
         return;
       }
 
-      await clearCompanionMission(companionBaseUrl, apiKey || undefined, tokenToUse);
+      await clearCompanionMission(companionBaseUrl, companionApiKey || undefined, tokenToUse);
       if (routeDraft.boundary.length >= 3) {
         await uploadFieldBoundary(
           routeDraft.name,
           routeDraft.boundary,
           routeDraft.boundary[0]?.altitude,
           companionBaseUrl,
-          apiKey || undefined,
+          companionApiKey || undefined,
           tokenToUse,
         );
       }
@@ -590,11 +821,11 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
           },
           'relative',
           companionBaseUrl,
-          apiKey || undefined,
+          companionApiKey || undefined,
           tokenToUse,
         );
       }
-      await uploadMissionToPixhawk(companionBaseUrl, apiKey || undefined, tokenToUse);
+      await uploadMissionToPixhawk(companionBaseUrl, companionApiKey || undefined, tokenToUse);
       setRouteMessage(`Uploaded ${routeDraft.waypoints.length} waypoints to companion`);
     } catch (error) {
       setRouteMessage(`Upload failed: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -618,7 +849,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
           source_format: sourceFormat,
           activate: true,
         },
-        apiKey || undefined,
+        companionApiKey || undefined,
         tokenToUse,
         companionBaseUrl,
       );
@@ -664,7 +895,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
           notes: baseStationDraft.notes,
           activate: true,
         },
-        apiKey || undefined,
+        companionApiKey || undefined,
         tokenToUse,
         companionBaseUrl,
       );
@@ -703,7 +934,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
           notes: request.notes,
           telemetry_history: request.telemetry_history ?? telemetryStream.samples.slice(-300),
         },
-        apiKey || undefined,
+        companionApiKey || undefined,
         tokenToUse,
         companionBaseUrl,
       );
@@ -725,7 +956,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
         return;
       }
 
-      const exported = await exportIsoxml(routeDraft.name, apiKey || undefined, tokenToUse, companionBaseUrl);
+      const exported = await exportIsoxml(routeDraft.name, companionApiKey || undefined, tokenToUse, companionBaseUrl);
       const exportPayload = exported as { archive_path?: string } | undefined;
       setFarmMessage(`ISOXML ${exportPayload?.archive_path ? 'ready' : 'prepared'}`);
     } catch (error) {
@@ -741,7 +972,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
         return;
       }
 
-      const result = await syncAgLeader(routeDraft.name, apiKey || undefined, tokenToUse, companionBaseUrl);
+      const result = await syncAgLeader(routeDraft.name, companionApiKey || undefined, tokenToUse, companionBaseUrl);
       const syncPayload = result as { status?: string } | undefined;
       setFarmMessage(`agLeader ${syncPayload?.status ?? 'queued'}`);
     } catch (error) {
@@ -757,7 +988,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
         return;
       }
 
-      const result = await generateFarmReport(routeDraft.name, apiKey || undefined, tokenToUse, companionBaseUrl);
+      const result = await generateFarmReport(routeDraft.name, companionApiKey || undefined, tokenToUse, companionBaseUrl);
       const reportPayload = result as { report_path?: string } | undefined;
       setFarmMessage(`report ${reportPayload?.report_path ? 'saved' : 'ready'}`);
     } catch (error) {
@@ -779,7 +1010,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
 
     const replayed = await replayFlightLogSyncBundle(
       String(bundle.archive_path),
-      apiKey || undefined,
+      companionApiKey || undefined,
       token,
       companionBaseUrl,
       false,
@@ -789,7 +1020,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
 
   async function refreshFlightLogHistory() {
     try {
-      const logBundles = await loadFlightLogSyncHistory(apiKey || undefined, companionBaseUrl);
+      const logBundles = await loadFlightLogSyncHistory(companionApiKey || undefined, companionBaseUrl);
       setFlightLogBundles(logBundles);
       setFlightLogMessage(logBundles.length ? `Loaded ${logBundles.length} flight log bundle(s)` : 'No flight log bundles yet');
     } catch {
@@ -826,7 +1057,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
         east: northEast[1],
         west: southWest[1],
       }, {
-        apiKey: apiKey || undefined,
+        apiKey: companionApiKey || undefined,
         controlToken: controlToken || undefined,
         baseUrl: companionBaseUrl,
         filename: file.name,
@@ -839,7 +1070,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
 
       const previewBlob = await loadGeoTiffPreview(
         response.asset_id,
-        apiKey || undefined,
+        companionApiKey || undefined,
         controlToken || undefined,
         companionBaseUrl,
       );
@@ -868,6 +1099,8 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
     geotiffInputRef.current?.click();
   }
 
+  const activeSidebarDrone = activeProfile?.fleet.drones.find((drone) => drone.drone_id === activeDroneId) ?? fleetConfig.drones[0];
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -879,84 +1112,161 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
           </div>
         </div>
 
-        <div className="sidebar-panel">
-          <span className="panel-label">Connection</span>
-          <div className="stack">
-            <StatusChip label="State" value={connectionState} tone={connectionTone} />
-            <StatusChip label="Telemetry" value={telemetryStream.state} tone={telemetryTone} />
-            <StatusChip label="Source" value={sourceLabel} tone="neutral" />
-            <StatusChip label="API" value={getBaseUrl(companionBaseUrl)} tone="neutral" />
-            <StatusChip label="Route" value={routeMessage} tone="neutral" />
-            <StatusChip label="Authority" value={authorityStatus} tone="neutral" />
+        <section className="sidebar-panel sidebar-accordion">
+          <div className="sidebar-panel-head">
+            <div>
+              <span className="panel-label">Drones</span>
+              <h3>Current swarm member</h3>
+            </div>
+            <button type="button" className="ghost-button" onClick={() => toggleSidebarSection('drones')}>
+              {sidebarSections.drones ? 'Collapse' : 'Expand'}
+            </button>
           </div>
-        </div>
+          {sidebarSections.drones ? (
+            <div className="stack">
+              <label className="field">
+                <span>Selected drone</span>
+                <select
+                  value={activeDroneId ?? ''}
+                  onChange={(event) => selectDraftActiveDrone(event.target.value)}
+                >
+                  {fleetConfig.drones.map((drone) => (
+                    <option key={drone.drone_id} value={drone.drone_id}>
+                      {drone.callsign ?? drone.drone_id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <StatusChip label="Drone" value={activeSidebarDrone?.callsign ?? activeSidebarDrone?.drone_id ?? 'none'} tone="neutral" />
+              <StatusChip label="Transport" value={activeSidebarDrone?.transport.type ?? 'unknown'} tone="neutral" />
+            </div>
+          ) : null}
+        </section>
 
-        <div className="sidebar-panel">
-          <span className="panel-label">Session</span>
-          <label className="field">
-            <span>API key</span>
-            <input
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-              placeholder="x-api-key"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <label className="field">
-            <span>Control token</span>
-            <input
-              value={controlToken}
-              onChange={(event) => setControlToken(event.target.value)}
-              placeholder="x-control-token"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={async () => {
-              const authority = await acquireControlAuthority(
-                companionBaseUrl,
-                apiKey || undefined,
-                `gs-${routeStorageKey}`,
-                'ground-station',
-              );
-              if (authority?.token) {
-                setControlToken(authority.token);
-              }
-              setAuthorityStatus(authority?.active ? 'authority acquired' : 'authority request sent');
-            }}
-          >
-            Acquire authority
-          </button>
-          <p className="hint">Connects to `/ws/telemetry` and the REST snapshot endpoints when configured.</p>
-        </div>
+        <section className="sidebar-panel sidebar-accordion">
+          <div className="sidebar-panel-head">
+            <div>
+              <span className="panel-label">Mission</span>
+              <h3>Route readiness</h3>
+            </div>
+            <button type="button" className="ghost-button" onClick={() => toggleSidebarSection('mission')}>
+              {sidebarSections.mission ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+          {sidebarSections.mission ? (
+            <div className="mini-list">
+              <div>
+                <strong>{mission?.waypoint_count ?? waypoints.length}</strong>
+                <span>Waypoints</span>
+              </div>
+              <div>
+                <strong>{mission?.completed ?? 0}</strong>
+                <span>Completed</span>
+              </div>
+              <div>
+                <strong>{formatMeters(mission?.total_distance_m)}</strong>
+                <span>Route length</span>
+              </div>
+            </div>
+          ) : null}
+        </section>
 
-        <ShellStatusPanel
-          shellContext={shellContext}
-          runtimeConfig={runtimeConfig}
-          companionBaseUrl={companionBaseUrl}
+        <section className="sidebar-panel sidebar-accordion">
+          <div className="sidebar-panel-head">
+            <div>
+              <span className="panel-label">Connection</span>
+              <h3>Link state</h3>
+            </div>
+            <button type="button" className="ghost-button" onClick={() => toggleSidebarSection('connection')}>
+              {sidebarSections.connection ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+          {sidebarSections.connection ? (
+            <div className="stack">
+              <StatusChip label="State" value={connectionState} tone={connectionTone} />
+              <StatusChip label="Telemetry" value={telemetryStream.state} tone={telemetryTone} />
+              <StatusChip label="Source" value={sourceLabel} tone="neutral" />
+              <StatusChip label="API" value={getBaseUrl(companionBaseUrl)} tone="neutral" />
+              <StatusChip label="Route" value={routeMessage} tone="neutral" />
+              <StatusChip label="Authority" value={authorityStatus} tone="neutral" />
+            </div>
+          ) : null}
+        </section>
+
+        <section className="sidebar-panel sidebar-accordion">
+          <div className="sidebar-panel-head">
+            <div>
+              <span className="panel-label">Shell parity</span>
+              <h3>Runtime shell</h3>
+            </div>
+            <button type="button" className="ghost-button" onClick={() => toggleSidebarSection('shell')}>
+              {sidebarSections.shell ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+          {sidebarSections.shell ? <ShellStatusPanel shellContext={shellContext} runtimeConfig={runtimeConfig} /> : null}
+        </section>
+
+        <section className="sidebar-panel sidebar-accordion">
+          <div className="sidebar-panel-head">
+            <div>
+              <span className="panel-label">Session</span>
+              <h3>Control authority</h3>
+            </div>
+            <button type="button" className="ghost-button" onClick={() => toggleSidebarSection('session')}>
+              {sidebarSections.session ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+          {sidebarSections.session ? (
+            <div className="stack">
+              <label className="field">
+                <span>Control token</span>
+                <input
+                  value={controlToken}
+                  onChange={(event) => setControlToken(event.target.value)}
+                  placeholder="x-control-token"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={async () => {
+                  const authority = await acquireControlAuthority(
+                    companionBaseUrl,
+                    companionApiKey || undefined,
+                    `gs-${routeStorageKey}`,
+                    'ground-station',
+                  );
+                  if (authority?.token) {
+                    setControlToken(authority.token);
+                  }
+                  setAuthorityStatus(authority?.active ? 'authority acquired' : 'authority request sent');
+                }}
+              >
+                Acquire authority
+              </button>
+              <p className="hint">Connects to `/ws/telemetry` and the REST snapshot endpoints when configured.</p>
+            </div>
+          ) : null}
+        </section>
+
+        <UserSettingsPanel
+          authenticated={sessionState.authenticated}
+          hasUsers={sessionState.has_users}
+          loading={settingsLoading}
+          saving={settingsSaving}
+          message={settingsMessage}
+          sessionUser={sessionState.user}
+          settingsDraft={settingsDraft}
+          defaultCompanionBaseUrl={defaultCompanionBaseUrl}
+          onLogin={handleLogin}
+          onLogout={handleLogout}
+          onSave={handleSaveSettings}
+          onDraftChange={setSettingsDraft}
+          collapsed={!sidebarSections.settings}
+          onToggleCollapse={() => toggleSidebarSection('settings')}
         />
-
-        <div className="sidebar-panel">
-          <span className="panel-label">Mission</span>
-          <div className="mini-list">
-            <div>
-              <strong>{mission?.waypoint_count ?? waypoints.length}</strong>
-              <span>Waypoints</span>
-            </div>
-            <div>
-              <strong>{mission?.completed ?? 0}</strong>
-              <span>Completed</span>
-            </div>
-            <div>
-              <strong>{formatMeters(mission?.total_distance_m)}</strong>
-              <span>Route length</span>
-            </div>
-          </div>
-        </div>
       </aside>
 
       <main className="content">
@@ -1039,7 +1349,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
               onBoundaryChange={setBoundaryPoints}
               onWaypointsChange={setWaypointPoints}
               activeDroneId={activeDrone?.drone_id}
-              onSelectDrone={setActiveDroneId}
+              onSelectDrone={selectDraftActiveDrone}
             />
 
             <div className="map-footer">
@@ -1097,7 +1407,7 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
           <FleetPanel
             drones={fleetMarkers}
             activeDroneId={activeDrone?.drone_id}
-            onSelectDrone={setActiveDroneId}
+            onSelectDrone={selectDraftActiveDrone}
           />
         </section>
 
@@ -1375,10 +1685,10 @@ function App({ companionBaseUrl, runtimeConfig }: AppProps) {
 
         <SwarmConfigEditor
           companionBaseUrl={companionBaseUrl}
-            apiKey={apiKey || undefined}
-            ensureControlToken={ensureControlToken}
-            coordination={swarmCoordination}
-          />
+          apiKey={companionApiKey || undefined}
+          ensureControlToken={ensureControlToken}
+          coordination={swarmCoordination}
+        />
         </section>
       </main>
     </div>
