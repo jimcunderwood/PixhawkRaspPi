@@ -18,10 +18,13 @@ type UserSettingsPanelProps = {
   sessionUser?: GroundStationSessionUser;
   settingsDraft: GroundStationUserSettings;
   defaultCompanionBaseUrl?: string;
-  onLogin: (request: GroundStationLoginRequest) => Promise<void>;
+  authorityStatus?: string;
+  acquiringAuthorityDroneId?: string;
+  onLogin: (request: GroundStationLoginRequest) => Promise<boolean>;
   onLogout: () => Promise<void>;
   onSave: () => Promise<void>;
   onDraftChange: Dispatch<SetStateAction<GroundStationUserSettings>>;
+  onAcquireAuthority: (profileId: string, droneId: string) => Promise<void>;
   collapsed?: boolean;
   onToggleCollapse: () => void;
 };
@@ -87,16 +90,22 @@ export function UserSettingsPanel({
   sessionUser,
   settingsDraft,
   defaultCompanionBaseUrl,
+  authorityStatus,
+  acquiringAuthorityDroneId,
   onLogin,
   onLogout,
   onSave,
   onDraftChange,
+  onAcquireAuthority,
   collapsed = false,
   onToggleCollapse,
 }: UserSettingsPanelProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [displayName, setDisplayName] = useState('');
+  const [createUserOpen, setCreateUserOpen] = useState(false);
+  const [createUsername, setCreateUsername] = useState('');
+  const [createPassword, setCreatePassword] = useState('');
+  const [createDisplayName, setCreateDisplayName] = useState('');
 
   const activeProfileIndex = useMemo(() => {
     const exactIndex = settingsDraft.profiles.findIndex((profile) => profile.profile_id === settingsDraft.active_profile_id);
@@ -209,6 +218,8 @@ export function UserSettingsPanel({
                 transport: {
                   type: profile.fleet.default_transport ?? 'websocket',
                   endpoint: '',
+                  api_key: '',
+                  control_token: '',
                 },
                 endpoints: [''],
                 status: 'idle',
@@ -240,13 +251,31 @@ export function UserSettingsPanel({
     );
   }
 
-  async function handleLogin() {
+  async function handleSignIn() {
     await onLogin({
       username,
       password,
-      display_name: displayName || username,
-      create: !hasUsers,
+      create: false,
     });
+  }
+
+  async function handleCreateUser() {
+    const nextUsername = createUsername.trim();
+    const success = await onLogin({
+      username: nextUsername,
+      password: createPassword,
+      display_name: createDisplayName || nextUsername,
+      create: true,
+    });
+
+    if (success) {
+      setCreateUserOpen(false);
+      setUsername(nextUsername);
+      setPassword('');
+      setCreateUsername('');
+      setCreatePassword('');
+      setCreateDisplayName('');
+    }
   }
 
   return (
@@ -254,11 +283,13 @@ export function UserSettingsPanel({
       <div className="sidebar-panel-head">
         <div>
           <span className="panel-label">User settings</span>
-          <h3>Stored profile access</h3>
+          <h3>{authenticated ? 'Stored profile access' : 'Sign in'}</h3>
         </div>
-        <button type="button" className="ghost-button" onClick={onToggleCollapse}>
-          {collapsed ? 'Expand' : 'Collapse'}
-        </button>
+        {authenticated ? (
+          <button type="button" className="ghost-button" onClick={onToggleCollapse}>
+            {collapsed ? 'Expand' : 'Collapse'}
+          </button>
+        ) : null}
       </div>
 
       {collapsed ? null : (
@@ -268,6 +299,21 @@ export function UserSettingsPanel({
             <div className="stack">
               <StatusChip label="User" value={sessionUser?.display_name ?? sessionUser?.username ?? 'signed in'} tone="good" />
               <StatusChip label="Storage" value="SQLite-backed session" tone="neutral" />
+              <StatusChip
+                label="Drone"
+                value={activeDrone?.callsign ?? activeDrone?.drone_id ?? 'not selected'}
+                tone={activeDrone ? 'good' : 'warn'}
+              />
+              <StatusChip
+                label="Api Key"
+                value={activeDrone?.transport.api_key?.trim() ? 'configured' : 'missing'}
+                tone={activeDrone?.transport.api_key?.trim() ? 'good' : 'warn'}
+              />
+              <StatusChip
+                label="Authority"
+                value={activeDrone?.transport.control_token?.trim() ? authorityStatus ?? 'token stored' : authorityStatus ?? 'not requested'}
+                tone={activeDrone?.transport.control_token?.trim() ? 'good' : 'neutral'}
+              />
             </div>
 
             <div className="settings-actions">
@@ -322,20 +368,6 @@ export function UserSettingsPanel({
                         label: event.target.value,
                       }))
                     }
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Companion URL</span>
-                  <input
-                    value={activeProfile.companion_base_url ?? ''}
-                    onChange={(event) =>
-                      setProfileField(activeProfile.profile_id, (profile) => ({
-                        ...profile,
-                        companion_base_url: event.target.value,
-                      }))
-                    }
-                    placeholder={defaultCompanionBaseUrl || 'http://192.168.1.50:8000'}
                   />
                 </label>
 
@@ -473,7 +505,7 @@ export function UserSettingsPanel({
                             </select>
                           </label>
                           <label className="field">
-                            <span>Primary endpoint</span>
+                            <span>Companion endpoint</span>
                             <input
                               value={drone.transport.endpoint}
                               onChange={(event) =>
@@ -496,10 +528,10 @@ export function UserSettingsPanel({
                                   },
                                 }))
                               }
-                              />
+                            />
                           </label>
                           <label className="field">
-                            <span>API key</span>
+                            <span>Api Key</span>
                             <input
                               value={drone.transport.api_key ?? ''}
                               onChange={(event) =>
@@ -526,6 +558,45 @@ export function UserSettingsPanel({
                               spellCheck={false}
                             />
                           </label>
+                          <label className="field">
+                            <span>Control token</span>
+                            <input
+                              value={drone.transport.control_token ?? ''}
+                              onChange={(event) =>
+                                setProfileField(activeProfile.profile_id, (profile) => ({
+                                  ...profile,
+                                  fleet: {
+                                    ...profile.fleet,
+                                    drones: profile.fleet.drones.map((entry) =>
+                                      entry.drone_id === drone.drone_id
+                                        ? {
+                                            ...entry,
+                                            transport: {
+                                              ...entry.transport,
+                                              control_token: event.target.value,
+                                            },
+                                          }
+                                        : entry,
+                                    ),
+                                  },
+                                }))
+                              }
+                              placeholder="x-control-token"
+                              autoComplete="off"
+                              spellCheck={false}
+                            />
+                          </label>
+                          <div className="field authority-field">
+                            <span>Control authority</span>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => void onAcquireAuthority(activeProfile.profile_id, drone.drone_id)}
+                              disabled={saving || loading || acquiringAuthorityDroneId === drone.drone_id}
+                            >
+                              {acquiringAuthorityDroneId === drone.drone_id ? 'Acquiring...' : 'Acquire authority'}
+                            </button>
+                          </div>
                         </div>
 
                         <div className="stack">
@@ -612,11 +683,7 @@ export function UserSettingsPanel({
           </>
         ) : (
           <>
-            <p className="hint">
-              {hasUsers
-                ? 'Sign in to load your saved connection profiles.'
-                : 'Create the first user to store profiles securely in SQLite.'}
-            </p>
+            <p className="hint">Sign in to load your saved connection profiles.</p>
             <label className="field">
               <span>Username</span>
               <input
@@ -633,29 +700,80 @@ export function UserSettingsPanel({
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                autoComplete={hasUsers ? 'current-password' : 'new-password'}
+                autoComplete="current-password"
                 spellCheck={false}
               />
             </label>
-            <label className="field">
-              <span>Display name</span>
-              <input
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                autoComplete="name"
-                spellCheck={false}
-                placeholder="Pilot"
-              />
-            </label>
-            <button type="button" className="secondary-button" onClick={handleLogin} disabled={loading}>
-              {hasUsers ? 'Sign in' : 'Create user'}
-            </button>
+            <div className="settings-actions">
+              <button type="button" className="secondary-button" onClick={handleSignIn} disabled={loading}>
+                Sign in
+              </button>
+              <button type="button" className="ghost-button" onClick={() => setCreateUserOpen(true)} disabled={loading}>
+                Create user
+              </button>
+            </div>
           </>
         )}
 
         {message ? <p className="hint">{message}</p> : null}
       </div>
       )}
+      {createUserOpen ? (
+        <div className="settings-modal-backdrop" role="presentation">
+          <div className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="create-user-title">
+            <div className="settings-modal-head">
+              <div>
+                <span className="panel-label">User settings</span>
+                <h3 id="create-user-title">Create user</h3>
+              </div>
+              <button type="button" className="ghost-button" onClick={() => setCreateUserOpen(false)} disabled={loading}>
+                Close
+              </button>
+            </div>
+
+            <div className="stack">
+              <label className="field">
+                <span>Username</span>
+                <input
+                  value={createUsername}
+                  onChange={(event) => setCreateUsername(event.target.value)}
+                  autoComplete="username"
+                  spellCheck={false}
+                  placeholder="pilot"
+                />
+              </label>
+              <label className="field">
+                <span>Password</span>
+                <input
+                  type="password"
+                  value={createPassword}
+                  onChange={(event) => setCreatePassword(event.target.value)}
+                  autoComplete="new-password"
+                  spellCheck={false}
+                />
+              </label>
+              <label className="field">
+                <span>Display name</span>
+                <input
+                  value={createDisplayName}
+                  onChange={(event) => setCreateDisplayName(event.target.value)}
+                  autoComplete="name"
+                  spellCheck={false}
+                  placeholder="Pilot"
+                />
+              </label>
+              <div className="settings-actions">
+                <button type="button" className="secondary-button" onClick={handleCreateUser} disabled={loading}>
+                  {loading ? 'Creating...' : 'Create user'}
+                </button>
+                <button type="button" className="ghost-button" onClick={() => setCreateUserOpen(false)} disabled={loading}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

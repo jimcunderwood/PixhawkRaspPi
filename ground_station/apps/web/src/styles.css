@@ -207,8 +207,84 @@ button {
   gap: 12px;
 }
 
+.settings-panel .authority-field .secondary-button {
+  width: 100%;
+}
+
 .settings-panel .sidebar-panel-head {
   align-items: center;
+}
+
+.settings-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 7, 13, 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.settings-modal {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 16px;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 18px;
+  border-radius: 18px;
+  background: var(--panel-strong);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.setup-modal {
+  width: min(760px, 100%);
+}
+
+.settings-modal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.settings-modal-head h3 {
+  margin: 0;
+}
+
+.settings-modal .settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.setup-issue-list {
+  display: grid;
+  gap: 8px;
+}
+
+.setup-issue {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 176, 0, 0.1);
+  border: 1px solid rgba(255, 176, 0, 0.22);
+}
+
+.setup-issue strong {
+  font-size: 0.9rem;
+}
+
+.setup-issue span {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.setup-config-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .endpoint-row {

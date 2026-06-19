@@ -17,8 +17,9 @@ services:
     build:
       context: .
       dockerfile: ground_station/apps/web/Dockerfile
+    env_file:
+      - ground_station/apps/web/.env
     environment:
-      COMPANION_BASE_URL: ${COMPANION_BASE_URL:-}
       GROUND_STATION_DATA_DIRECTORY: /var/lib/ground-station
     ports:
       - "8080:80"

@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import exampleSwarmConfig from '../../../../shared/types/swarm-config.example.json';
 import type {
   SwarmConfig,
-  SwarmCoordinationStatus,
   SwarmPeerConfig,
   SwarmPeerTrust,
   SwarmRole,
-  SwarmTransportKind,
 } from '../../../../shared/types/swarm';
+import type { SwarmCoordinationStatus } from '../../../../shared/types/base';
+import type { TransportKind as SwarmTransportKind } from '../../../../shared/types/fleet';
 import { loadSwarmConfig, saveSwarmConfig } from '../../../../shared/api/swarm';
 import { StatusChip } from '../../../../packages/ui/src';
 

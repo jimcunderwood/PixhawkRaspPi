@@ -142,6 +142,11 @@ If the ground station and companion run on different hosts, set
 `COMPANION_BASE_URL` for the ground-station profile or the web UI container so
 it points at the companion's reachable address.
 
+For a separate ground-station install, copy the companion `API_KEY` into
+`ground_station/apps/web/.env` on the ground-station machine. That key becomes
+the default `admin` password and is copied into the default admin drone
+connection settings on first startup.
+
 See [ground_station/docs/INSTALLATION.md](ground_station/docs/INSTALLATION.md)
 for the full OS-specific install guide for the operator UI.
 

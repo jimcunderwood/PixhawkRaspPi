@@ -4,6 +4,7 @@ export type DroneTransport = {
   type: TransportKind;
   endpoint: string;
   api_key?: string;
+  control_token?: string;
   path?: string;
   channel?: string;
 };

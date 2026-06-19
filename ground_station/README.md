@@ -76,7 +76,7 @@ docker build -f ground_station/apps/web/Dockerfile -t ground-station-web .
 ```
 
 Run the web UI with a runtime `.env` file instead of baking the companion URL
-into the image:
+or API key into the image:
 
 ```bash
 cp ground_station/apps/web/.env.example ground_station/apps/web/.env
@@ -84,7 +84,9 @@ docker run --rm -p 8080:80 --env-file ground_station/apps/web/.env ground-statio
 ```
 
 If the companion lives on another host, set `COMPANION_BASE_URL` to that host's
-reachable address, for example `http://192.168.1.50:8000`.
+reachable address, for example `http://192.168.1.50:8000`. Copy the companion
+`API_KEY` into the ground-station `.env`; it becomes the default `admin`
+password and is copied into the default admin drone connection settings.
 
 To run the web UI with Docker Compose:
 
@@ -93,8 +95,27 @@ docker compose --profile ground-station up -d
 ```
 
 The same Compose file can run the companion on a Pi and the web UI on a
-separate workstation. Set `COMPANION_BASE_URL` in the host environment or a
-Compose `.env` file so the ground station reaches the other machine at runtime.
+separate workstation. The ground-station profile reads
+`ground_station/apps/web/.env`, so copy that file from the example and set
+`COMPANION_BASE_URL` and `API_KEY` before first startup.
+
+## Connection URL Examples
+
+Use full URLs in the ground-station user and drone settings. Do not enter a
+bare IP address.
+
+| Setting | Example | Notes |
+| --- | --- | --- |
+| Ground-station `COMPANION_BASE_URL` | `http://192.168.1.50:8000` | Companion REST/API base URL. Use the companion machine IP and API port. |
+| Local development `COMPANION_BASE_URL` | `http://localhost:8000` | Use only when the companion API is running on the same machine. |
+| Drone `Companion endpoint` | `http://192.168.1.50:8000` | Recommended primary endpoint for a drone connection. REST calls and telemetry discovery use this base URL. |
+| Drone alternate telemetry endpoint | `ws://192.168.1.50:8000/ws/telemetry` | Optional explicit WebSocket telemetry URL. `wss://` is the secure form when the companion is behind HTTPS. |
+| Drone alternate events endpoint | `ws://192.168.1.50:8000/ws/events` | Optional WebSocket event stream URL for tooling or future event panels. |
+| Drone MAVLink UDP bridge | `udp://192.168.1.51:14550` | Use for a drone or bridge that is reachable over UDP instead of the companion REST API. |
+
+Use `https://companion-host:port` and `wss://companion-host:port/...` when the
+companion is served through TLS. The `Api Key` field should contain only the key
+value copied from the companion install, not a URL query string.
 
 ## Desktop
 

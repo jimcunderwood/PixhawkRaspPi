@@ -2,18 +2,19 @@ import type { FleetConfig } from '../types/fleet';
 
 export const mockFleetConfig: FleetConfig = {
   fleet_id: 'field-alpha',
-  default_transport: 'websocket',
+  default_transport: 'http',
   drones: [
     {
       drone_id: 'drone-01',
       callsign: 'Alpha',
       role: 'leader',
       transport: {
-        type: 'websocket',
-        endpoint: 'ws://192.168.1.50:9001',
+        type: 'http',
+        endpoint: 'http://192.168.1.50:8000',
         api_key: '',
+        control_token: '',
       },
-      endpoints: ['ws://192.168.1.50:9001', 'http://192.168.1.50:8000'],
+      endpoints: ['http://192.168.1.50:8000', 'ws://192.168.1.50:8000/ws/telemetry'],
       capabilities: ['arm', 'takeoff', 'land', 'mission', 'telemetry'],
       status: 'active',
       last_heartbeat: new Date().toISOString(),
@@ -26,6 +27,7 @@ export const mockFleetConfig: FleetConfig = {
         type: 'udp',
         endpoint: 'udp://192.168.1.51:14550',
         api_key: '',
+        control_token: '',
       },
       endpoints: ['udp://192.168.1.51:14550'],
       capabilities: ['mission', 'telemetry'],

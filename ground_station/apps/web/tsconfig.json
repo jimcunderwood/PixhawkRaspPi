@@ -15,7 +15,13 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "baseUrl": "."
+    "baseUrl": ".",
+    "paths": {
+      "react": ["node_modules/react"],
+      "react/jsx-runtime": ["node_modules/@types/react/jsx-runtime"],
+      "react/jsx-dev-runtime": ["node_modules/@types/react/jsx-dev-runtime"],
+      "react-dom": ["node_modules/react-dom"]
+    }
   },
   "include": ["src", "../../shared/**/*.ts", "../../packages/**/*.ts", "../../packages/**/*.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]

@@ -71,6 +71,16 @@ function buildUrl(baseUrl: string | undefined, path: string): string {
   return new URL(path, baseUrl).toString();
 }
 
+function addApiKeyToUrl(url: string, apiKey?: string): string {
+  if (!apiKey) {
+    return url;
+  }
+
+  const nextUrl = new URL(url, globalThis.location?.href ?? 'http://localhost');
+  nextUrl.searchParams.set('api_key', apiKey);
+  return nextUrl.toString();
+}
+
 export function buildWebSocketUrl(baseUrl: string | undefined, path: string, apiKey?: string): string {
   if (!baseUrl) {
     const locationHref = globalThis.location?.href;
@@ -104,7 +114,7 @@ async function requestJson<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const response = await fetch(buildUrl(options.baseUrl, path), {
+  const response = await fetch(addApiKeyToUrl(buildUrl(options.baseUrl, path), options.apiKey), {
     headers: {
       ...(options.apiKey ? { 'x-api-key': options.apiKey } : {}),
       ...(options.controlToken ? { 'x-control-token': options.controlToken } : {}),
@@ -124,7 +134,7 @@ async function requestBlob(
   body?: unknown,
   method: 'GET' | 'POST' = 'GET',
 ): Promise<Blob> {
-  const response = await fetch(buildUrl(options.baseUrl, path), {
+  const response = await fetch(addApiKeyToUrl(buildUrl(options.baseUrl, path), options.apiKey), {
     method,
     headers: {
       ...(body ? { 'content-type': 'application/json' } : {}),
@@ -148,7 +158,7 @@ async function requestJsonWithBody<T>(
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
   headers: Record<string, string> = {},
 ): Promise<T> {
-  const response = await fetch(buildUrl(options.baseUrl, path), {
+  const response = await fetch(addApiKeyToUrl(buildUrl(options.baseUrl, path), options.apiKey), {
     method,
     headers: {
       ...headers,

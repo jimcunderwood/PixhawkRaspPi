@@ -1,6 +1,9 @@
 import type { FleetStatus } from './fleet-status';
 import type { PrescriptionStatus } from './prescription';
 
+export type { FleetStatus } from './fleet-status';
+export type { PrescriptionMap, PrescriptionStatus } from './prescription';
+
 export type BaseStationStatus = {
   station_id?: string;
   name?: string;

@@ -44,8 +44,11 @@ Settings are stored under the Electron user-data directory by default. Set
 
 The shell keeps the UI stack aligned with the web app so the same shared
 mission, swarm, calibration, farm, and flight-log workflows stay in one codepath.
+The selected drone drives the live telemetry stream, map highlight, and REST
+calls across the shared UI.
 
 The desktop shell should render the same shell status card as the web app so
 operators can confirm the runtime mode and Companion endpoint from either
 surface. After signing in, use the user settings panel to edit per-profile
-companion URLs, per-drone transport endpoints, and the active drone selector.
+drone connection settings, per-drone companion endpoints, alternate endpoint
+lists, per-drone API keys, and the active drone selector.

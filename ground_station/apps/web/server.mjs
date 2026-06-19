@@ -12,6 +12,8 @@ const defaultDataDir = process.env.GROUND_STATION_DATA_DIRECTORY || resolve(home
 const defaultPort = Number(process.env.GROUND_STATION_PORT || 8080);
 const defaultHost = process.env.GROUND_STATION_HOST || '0.0.0.0';
 const defaultShellLabel = process.env.GROUND_STATION_SHELL_LABEL || 'web';
+const defaultApiKey = process.env.API_KEY?.trim() || process.env.COMPANION_API_KEY?.trim() || '';
+const defaultAdminUsername = process.env.GROUND_STATION_ADMIN_USERNAME?.trim() || 'admin';
 
 const contentTypes = {
   '.css': 'text/css; charset=utf-8',
@@ -71,9 +73,26 @@ function hashPassword(password, salt) {
   return crypto.scryptSync(password, salt, 64).toString('hex');
 }
 
-function createDefaultSettings(username, displayName, companionBaseUrl) {
+function buildTelemetryEndpoint(companionEndpoint) {
+  try {
+    const url = new URL(companionEndpoint || 'http://192.168.1.50:8000');
+    url.protocol = url.protocol === 'https:' || url.protocol === 'wss:' ? 'wss:' : 'ws:';
+    url.pathname = '/ws/telemetry';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return 'ws://192.168.1.50:8000/ws/telemetry';
+  }
+}
+
+function createDefaultSettings(userId, username, displayName, companionBaseUrl, apiKey = '') {
+  const companionEndpoint = companionBaseUrl || 'http://192.168.1.50:8000';
+  const telemetryEndpoint = buildTelemetryEndpoint(companionEndpoint);
+  const transportType = companionEndpoint.startsWith('ws') || companionEndpoint.startsWith('wss') ? 'websocket' : 'http';
+
   return {
-    user_id: `user-${username.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'pilot'}`,
+    user_id: userId,
     username,
     display_name: displayName,
     active_profile_id: 'profile-default',
@@ -85,17 +104,19 @@ function createDefaultSettings(username, displayName, companionBaseUrl) {
         selected_drone_id: 'drone-01',
         fleet: {
           fleet_id: 'field-alpha',
-          default_transport: 'websocket',
+          default_transport: transportType,
           drones: [
             {
               drone_id: 'drone-01',
               callsign: 'Alpha',
               role: 'leader',
               transport: {
-                type: 'websocket',
-                endpoint: companionBaseUrl || 'ws://192.168.1.50:9001',
+                type: transportType,
+                endpoint: companionEndpoint,
+                api_key: apiKey,
+                control_token: '',
               },
-              endpoints: [companionBaseUrl || 'ws://192.168.1.50:9001', 'http://192.168.1.50:8000'],
+              endpoints: [companionEndpoint, telemetryEndpoint],
               capabilities: ['arm', 'takeoff', 'land', 'mission', 'telemetry'],
               status: 'active',
               last_heartbeat: new Date().toISOString(),
@@ -107,6 +128,8 @@ function createDefaultSettings(username, displayName, companionBaseUrl) {
               transport: {
                 type: 'udp',
                 endpoint: 'udp://192.168.1.51:14550',
+                api_key: apiKey,
+                control_token: '',
               },
               endpoints: ['udp://192.168.1.51:14550'],
               capabilities: ['mission', 'telemetry'],
@@ -131,10 +154,12 @@ async function loadSqlJs(sqlJsModuleUrl) {
 }
 
 class SettingsStore {
-  constructor({ dataDir, sqlJsModuleUrl, companionBaseUrl }) {
+  constructor({ dataDir, sqlJsModuleUrl, companionBaseUrl, apiKey, adminUsername }) {
     this.dataDir = dataDir;
     this.sqlJsModuleUrl = sqlJsModuleUrl;
     this.companionBaseUrl = companionBaseUrl;
+    this.apiKey = apiKey;
+    this.adminUsername = adminUsername;
     this.dbPath = resolve(dataDir, 'settings.sqlite3');
     this.sql = undefined;
     this.db = undefined;
@@ -180,6 +205,7 @@ class SettingsStore {
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
       );
     `);
+    this.ensureDefaultAdminUser();
     await this.save();
   }
 
@@ -289,7 +315,91 @@ class SettingsStore {
     );
   }
 
-  createUser({ username, password, displayName }) {
+  defaultSettingsForUser(userRow) {
+    return createDefaultSettings(
+      userRow.id,
+      userRow.username,
+      userRow.display_name || userRow.username,
+      this.companionBaseUrl,
+      this.apiKey,
+    );
+  }
+
+  updateUserPassword(userId, password) {
+    const now = this.nowIso();
+    const salt = crypto.randomBytes(16).toString('hex');
+    this.db.run(
+      `
+      UPDATE users
+      SET password_hash = ?, password_salt = ?, updated_at = ?
+      WHERE id = ?
+      `,
+      [hashPassword(password, salt), salt, now, userId],
+    );
+  }
+
+  fillMissingApiKeys(settings) {
+    if (!this.apiKey) {
+      return settings;
+    }
+
+    let changed = false;
+    const profiles = settings.profiles.map((profile) => ({
+      ...profile,
+      fleet: {
+        ...profile.fleet,
+        drones: profile.fleet.drones.map((drone) => {
+          if (drone.transport.api_key?.trim()) {
+            return drone;
+          }
+
+          changed = true;
+          return {
+            ...drone,
+            transport: {
+              ...drone.transport,
+              api_key: this.apiKey,
+            },
+          };
+        }),
+      },
+    }));
+
+    return changed ? { ...settings, profiles } : settings;
+  }
+
+  ensureSettingsForUser(userRow) {
+    let settings = this.getSettingsForUserId(userRow.id);
+    if (!settings) {
+      settings = this.defaultSettingsForUser(userRow);
+      this.upsertSettings(userRow.id, settings);
+      void this.save();
+    }
+    return settings;
+  }
+
+  ensureDefaultAdminUser() {
+    const adminPassword = this.apiKey || 'admin';
+    let adminRow = this.getUserByUsername(this.adminUsername);
+    if (!adminRow) {
+      adminRow = this.createUser({
+        username: this.adminUsername,
+        password: adminPassword,
+        displayName: 'Admin',
+        seedSettings: false,
+      });
+    } else if (this.apiKey && !this.verifyPassword(adminRow, adminPassword)) {
+      this.updateUserPassword(adminRow.id, adminPassword);
+      adminRow = this.getUserById(adminRow.id);
+    }
+    const settings = this.ensureSettingsForUser(adminRow);
+    const settingsWithApiKey = this.fillMissingApiKeys(settings);
+    if (settingsWithApiKey !== settings) {
+      this.upsertSettings(adminRow.id, settingsWithApiKey);
+    }
+  }
+
+  createUser({ username, password, displayName, seedSettings = true }) {
     const now = this.nowIso();
     const salt = crypto.randomBytes(16).toString('hex');
     const userId = randomId('user');
@@ -300,7 +410,11 @@ class SettingsStore {
       `,
       [userId, username, displayName || username, hashPassword(password, salt), salt, now, now],
     );
-    return this.getUserById(userId);
+    const userRow = this.getUserById(userId);
+    if (seedSettings && userRow) {
+      this.ensureSettingsForUser(userRow);
+    }
+    return userRow;
   }
 
   verifyPassword(userRow, password) {
@@ -327,7 +441,7 @@ class SettingsStore {
   }
 
   buildSessionState(userRow) {
-    const settings = this.getSettingsForUserId(userRow.id);
+    const settings = this.ensureSettingsForUser(userRow);
     return {
       authenticated: true,
       has_users: this.getUserCount() > 0,
@@ -340,17 +454,25 @@ class SettingsStore {
     };
   }
 
-  login({ username, password, displayName, create }) {
+  createAccount({ username, password, displayName }) {
     const existing = this.getUserByUsername(username);
-    if (!existing && !create && this.getUserCount() > 0) {
+    if (existing) {
       return undefined;
     }
 
-    let userRow = existing;
-    if (!userRow) {
-      userRow = this.createUser({ username, password, displayName });
-      void this.save();
-    } else if (!this.verifyPassword(userRow, password)) {
+    const userRow = this.createUser({ username, password, displayName });
+    void this.save();
+    return {
+      authenticated: false,
+      has_users: this.getUserCount() > 0,
+      created: true,
+      created_username: userRow.username,
+    };
+  }
+
+  login({ username, password }) {
+    const userRow = this.getUserByUsername(username);
+    if (!userRow || !this.verifyPassword(userRow, password)) {
       return undefined;
     }
 
@@ -431,12 +553,16 @@ export async function startGroundStationServer({
   dataDir = defaultDataDir,
   shellLabel = defaultShellLabel,
   companionBaseUrl = process.env.COMPANION_BASE_URL?.trim(),
+  apiKey = defaultApiKey,
+  adminUsername = defaultAdminUsername,
   sqlJsModuleUrl = pathToFileURL(resolve(moduleDir, 'node_modules/sql.js/dist/sql-wasm.js')).href,
 } = {}) {
   const store = new SettingsStore({
     dataDir,
     sqlJsModuleUrl,
     companionBaseUrl,
+    apiKey,
+    adminUsername,
   });
   await store.init();
 
@@ -466,12 +592,38 @@ export async function startGroundStationServer({
           jsonResponse(response, 400, { message: 'username and password are required' });
           return;
         }
+        const username = body.username.trim();
+        if (!username || !body.password) {
+          jsonResponse(response, 400, { message: 'username and password are required' });
+          return;
+        }
+
+        if (Boolean(body.create)) {
+          const createdState = store.createAccount({
+            username,
+            password: body.password,
+            displayName: typeof body.display_name === 'string' ? body.display_name.trim() : undefined,
+          });
+
+          if (!createdState) {
+            jsonResponse(response, 409, { message: 'username already exists' });
+            return;
+          }
+
+          response.setHeader(
+            'set-cookie',
+            setCookie('gs_session', '', {
+              maxAgeSeconds: 0,
+              secure: request.headers['x-forwarded-proto'] === 'https' || request.socket.encrypted,
+            }),
+          );
+          jsonResponse(response, 201, createdState);
+          return;
+        }
 
         const loginResult = store.login({
-          username: body.username.trim(),
+          username,
           password: body.password,
-          displayName: typeof body.display_name === 'string' ? body.display_name.trim() : undefined,
-          create: Boolean(body.create),
         });
 
         if (!loginResult) {
@@ -580,7 +732,7 @@ export async function startGroundStationServer({
   };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   startGroundStationServer().then(({ host, port }) => {
     console.log(`Ground station running at http://${host}:${port}`);
   }).catch((error) => {

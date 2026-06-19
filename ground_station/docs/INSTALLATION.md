@@ -65,9 +65,10 @@ cp ground_station/apps/web/.env.example ground_station/apps/web/.env
 docker run --rm -p 8080:80 --env-file ground_station/apps/web/.env ground-station-web
 ```
 
-The first time you open the app, create a user in the sidebar. That user’s
-runtime profiles and drone connections are stored in the SQLite database under
-the configured ground-station data directory.
+Before first startup, set `COMPANION_BASE_URL` in `ground_station/apps/web/.env`
+to the companion machine and copy the companion `API_KEY` into the same file.
+The first startup creates the default `admin` user, uses that API key as the
+admin password, and copies it into the default admin drone connection settings.
 
 ## macOS
 
@@ -125,6 +126,23 @@ Node.js install.
 If `COMPANION_BASE_URL` is not set, the UI falls back to the bundled mock
 state so the dashboard still opens without a live companion.
 
+Use full URLs in both runtime configuration and per-drone settings:
+
+| Setting | Example URL | Where It Goes |
+| --- | --- | --- |
+| Companion REST/API base | `http://192.168.1.50:8000` | `COMPANION_BASE_URL` and the drone `Companion endpoint` field |
+| Local companion REST/API base | `http://localhost:8000` | Local development only |
+| Telemetry WebSocket | `ws://192.168.1.50:8000/ws/telemetry` | Drone alternate endpoints when you want an explicit telemetry URL |
+| Events WebSocket | `ws://192.168.1.50:8000/ws/events` | Drone alternate endpoints or future event tooling |
+| Secure companion REST/API base | `https://companion.example.com` | Use when the companion is behind HTTPS/TLS |
+| Secure telemetry WebSocket | `wss://companion.example.com/ws/telemetry` | Secure WebSocket form for HTTPS/TLS deployments |
+| MAVLink UDP bridge | `udp://192.168.1.51:14550` | Drone endpoint for UDP bridge connections |
+
+Always include the protocol prefix, such as `http://`, `ws://`, `https://`,
+`wss://`, or `udp://`. Put the companion API key in the `API_KEY` environment
+variable and the user profile `Api Key` field; do not append it manually to
+these URLs.
+
 ## Docker Compose
 
 The repository root includes a `docker-compose.yml` with separate profiles for
@@ -134,8 +152,11 @@ the companion and ground station. Run the ground station on its own host with:
 docker compose --profile ground-station up -d
 ```
 
-Set `COMPANION_BASE_URL` in the host environment or a Compose `.env` file so
-the web container can reach the companion on the other machine.
+For a separate-machine install, copy `ground_station/apps/web/.env.example` to
+`ground_station/apps/web/.env` on the ground-station machine. Set
+`COMPANION_BASE_URL` to the companion machine and copy the companion `API_KEY`
+into that file. The Compose ground-station profile reads it and uses the API key
+as the default `admin` password and default drone API key.
 
 ## Desktop
 

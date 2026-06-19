@@ -1,0 +1,3 @@
+ground_station/apps/web/dist/
+ground_station/apps/web/node_modules/
+ground_station/apps/web/.env

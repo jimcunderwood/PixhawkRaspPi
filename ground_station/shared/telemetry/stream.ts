@@ -6,19 +6,25 @@ type TelemetryEnvelope = {
   sample?: TelemetrySnapshot;
   current?: TelemetrySnapshot;
   snapshot?: TelemetrySnapshot;
-} | TelemetrySnapshot;
+};
+
+function isTelemetrySnapshot(value: unknown): value is TelemetrySnapshot {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    ('timestamp' in value || 'ground_speed' in value || 'battery' in value)
+  );
+}
 
 export function normalizeTelemetryPayload(payload: unknown): TelemetrySnapshot | undefined {
   if (!payload || typeof payload !== 'object') {
     return undefined;
   }
 
-  const candidate = payload as TelemetryEnvelope & {
-    data?: TelemetrySnapshot | { telemetry?: TelemetrySnapshot };
-  };
+  const candidate = payload as TelemetryEnvelope;
 
-  if ('timestamp' in candidate || 'ground_speed' in candidate || 'battery' in candidate) {
-    return candidate as TelemetrySnapshot;
+  if (isTelemetrySnapshot(candidate)) {
+    return candidate;
   }
 
   if (candidate.data && typeof candidate.data === 'object') {

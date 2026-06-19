@@ -26,8 +26,18 @@ function buildUrl(baseUrl: string | undefined, path: string): string {
   return new URL(path, baseUrl).toString();
 }
 
+function addApiKeyToUrl(url: string, apiKey?: string): string {
+  if (!apiKey) {
+    return url;
+  }
+
+  const nextUrl = new URL(url, globalThis.location?.href ?? 'http://localhost');
+  nextUrl.searchParams.set('api_key', apiKey);
+  return nextUrl.toString();
+}
+
 async function requestJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const response = await fetch(buildUrl(options.baseUrl, path), {
+  const response = await fetch(addApiKeyToUrl(buildUrl(options.baseUrl, path), options.apiKey), {
     headers: {
       'content-type': 'application/json',
       ...(options.apiKey ? { 'x-api-key': options.apiKey } : {}),
@@ -48,7 +58,7 @@ async function requestJsonWithBody<T>(
   options: RequestOptions = {},
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
 ): Promise<T> {
-  const response = await fetch(buildUrl(options.baseUrl, path), {
+  const response = await fetch(addApiKeyToUrl(buildUrl(options.baseUrl, path), options.apiKey), {
     method,
     headers: {
       'content-type': 'application/json',

@@ -18,40 +18,66 @@ For OS-specific install steps and Docker usage, see
 - Weather briefing status and obstacle-scan status panels are wired into the operator dashboard
 - Prescription and variable-rate task state are shown alongside the mission view
 - RTK/PPK calibration, farm export/report, flight-log replay, and swarm coordination workflows are wired into the operator dashboard
-- The shell status panel shows the current runtime, companion target, and whether the shell is running in web, desktop, or mobile mode
-- Signed-in users can store runtime profiles in SQLite-backed settings, including per-profile companion URLs and per-drone connection endpoints
+- The shell status panel shows the current runtime and whether the shell is running in web, desktop, or mobile mode
+- Signed-in users can store runtime profiles in SQLite-backed settings, including per-drone companion endpoints, transport types, alternate endpoints, and API keys
+- The selected drone's API key is sent on companion requests as both the `x-api-key` header and `api_key` query parameter, which makes the auth path visible in browser devtools and compatible with the companion server
 
 ## Companion API integration
 
 Set `COMPANION_BASE_URL` in the runtime environment when you want the app to
-talk to a live companion instance.
+talk to a live companion instance. Set `API_KEY` to the same key configured on
+the companion machine.
 
 Example:
 
 ```bash
 COMPANION_BASE_URL=http://192.168.1.20:8000
+API_KEY=replace-with-companion-api-key
 ```
 
 The Docker image reads that value at startup and serves `/runtime-config.json`,
 so the UI can be moved to a different host without rebuilding. The same server
 also persists user settings in SQLite so each operator can keep their own
-runtime profiles.
+runtime profiles. On first startup, the default `admin` user uses `API_KEY` as
+its password and the default admin drone connection stores that same API key.
 
 The app will try the companion first and fall back to the bundled mock snapshot if the API is unavailable.
 
 After signing in, use the user settings panel to edit:
 
 - the active profile
-- the companion URL for that profile
 - the per-drone transport type
-- the per-drone endpoint list
+- the per-drone companion endpoint and alternate endpoint list
+- the per-drone API key
 - the active drone inside the current profile
+
+The selected drone drives the live telemetry, REST, and map-highlighted fleet focus in all shells that share this web UI.
+
+### URL examples for settings
+
+Every connection value should include its protocol. Use these examples when
+configuring the ground station, a user profile, or a drone:
+
+| Field | Example |
+| --- | --- |
+| `COMPANION_BASE_URL` | `http://192.168.1.50:8000` |
+| Local `COMPANION_BASE_URL` | `http://localhost:8000` |
+| Drone `Companion endpoint` | `http://192.168.1.50:8000` |
+| Drone telemetry alternate endpoint | `ws://192.168.1.50:8000/ws/telemetry` |
+| Drone events alternate endpoint | `ws://192.168.1.50:8000/ws/events` |
+| Secure companion endpoint | `https://companion.example.com` |
+| Secure telemetry endpoint | `wss://companion.example.com/ws/telemetry` |
+| UDP bridge endpoint | `udp://192.168.1.51:14550` |
+
+The `Api Key` field is only the key value copied from the companion install.
+Do not enter `?api_key=...` in endpoint URLs.
 
 ## Local Development
 
 ```bash
 npm install
 export COMPANION_BASE_URL=http://192.168.1.20:8000
+export API_KEY=replace-with-companion-api-key
 npm run dev -- --host 0.0.0.0
 ```
 

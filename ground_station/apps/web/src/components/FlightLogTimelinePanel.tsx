@@ -9,7 +9,7 @@ type FlightLogTimelinePanelProps = {
   onRefresh: () => Promise<void> | void;
 };
 
-function formatAge(timestamp?: number) {
+function formatAge(timestamp?: number | null) {
   if (!timestamp) {
     return '--';
   }

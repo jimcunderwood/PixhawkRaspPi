@@ -36,6 +36,8 @@ export type PrescriptionStatus = {
   current_flow_rate_liters_per_minute?: number | null;
   recommended_duty_cycle?: number | null;
   ground_speed_mps?: number | null;
+  speed_sync_enabled?: boolean;
+  effective_ground_speed_mps?: number | null;
   swath_width_m?: number | null;
   location?: {
     latitude?: number;

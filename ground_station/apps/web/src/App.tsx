@@ -36,7 +36,7 @@ import {
   uploadMissionToPixhawk,
   uploadMissionWaypoint,
 } from '../../../shared/api/mission';
-import type { DroneFleetEntry } from '../../../shared/types/fleet';
+import type { DroneFleetEntry, DroneTransport, FleetConfig, TransportKind } from '../../../shared/types/fleet';
 import {
   appendDraftWaypoint,
   createMissionRouteDraft,
@@ -47,7 +47,6 @@ import {
   updateDraftWaypoints,
 } from '../../../shared/mission/routes';
 import {
-  createDefaultUserSettings,
   type GroundStationLoginRequest,
   type GroundStationSessionState,
   type GroundStationUserSettings,
@@ -124,8 +123,8 @@ function formatPercent(value?: number) {
   return `${Math.round(value)}%`;
 }
 
-function formatOptionalNumber(value?: number, digits = 1, suffix = '') {
-  if (value === undefined || Number.isNaN(value)) {
+function formatOptionalNumber(value?: number | null, digits = 1, suffix = '') {
+  if (value === undefined || value === null || Number.isNaN(value)) {
     return '--';
   }
 
@@ -175,34 +174,254 @@ function cloneSettings(settings: GroundStationUserSettings): GroundStationUserSe
   return JSON.parse(JSON.stringify(settings)) as GroundStationUserSettings;
 }
 
-function cloneFleetConfig(fleet: typeof mockFleetConfig) {
-  return JSON.parse(JSON.stringify(fleet)) as typeof mockFleetConfig;
+const emptyUserSettings: GroundStationUserSettings = {
+  user_id: '',
+  username: '',
+  active_profile_id: '',
+  profiles: [],
+};
+
+function nonEmptyTrimmed(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function endpointProtocol(endpoint?: string): string | undefined {
+  const trimmed = nonEmptyTrimmed(endpoint);
+  if (!trimmed) {
+    return undefined;
+  }
+
+  try {
+    return new URL(trimmed).protocol.replace(':', '');
+  } catch {
+    return undefined;
+  }
+}
+
+function candidateDroneEndpoints(drone?: DroneFleetEntry): string[] {
+  const candidates = [drone?.transport.endpoint, ...(drone?.endpoints ?? [])]
+    .map(nonEmptyTrimmed)
+    .filter(Boolean) as string[];
+
+  return [...new Set(candidates)];
+}
+
+function websocketEndpointAsHttp(endpoint?: string): string | undefined {
+  const protocol = endpointProtocol(endpoint);
+  if (protocol !== 'ws' && protocol !== 'wss') {
+    return undefined;
+  }
+
+  const url = new URL(endpoint as string);
+  url.protocol = protocol === 'wss' ? 'https:' : 'http:';
+  return url.toString();
+}
+
+function selectCompanionApiBase(drone?: DroneFleetEntry, fallback?: string): string | undefined {
+  const endpoints = candidateDroneEndpoints(drone);
+  const fallbackBase = nonEmptyTrimmed(fallback);
+  const explicitHttpEndpoint = endpoints.find((endpoint) => {
+    const protocol = endpointProtocol(endpoint);
+    return protocol === 'http' || protocol === 'https';
+  });
+
+  return explicitHttpEndpoint ?? fallbackBase ?? websocketEndpointAsHttp(endpoints[0]);
+}
+
+function selectTelemetryBase(drone?: DroneFleetEntry, fallback?: string): string | undefined {
+  const endpoints = candidateDroneEndpoints(drone);
+  const fallbackBase = nonEmptyTrimmed(fallback);
+  const streamEndpoint = endpoints.find((endpoint) => {
+    const protocol = endpointProtocol(endpoint);
+    return protocol === 'ws' || protocol === 'wss' || protocol === 'http' || protocol === 'https';
+  });
+
+  return streamEndpoint ?? fallbackBase;
+}
+
+type SettingsSetupIssue = {
+  field: string;
+  message: string;
+};
+
+const validSetupEndpointProtocols = new Set(['http', 'https', 'ws', 'wss', 'udp']);
+const setupTransportOptions: TransportKind[] = ['http', 'websocket', 'udp', 'mavlink', 'ipc', 'ble', 'native'];
+
+function cloneFleetConfig(fleet: FleetConfig): FleetConfig {
+  return JSON.parse(JSON.stringify(fleet)) as FleetConfig;
+}
+
+function defaultCompanionEndpoint(fallback?: string): string {
+  return nonEmptyTrimmed(fallback) ?? 'http://192.168.1.50:8000';
+}
+
+function buildTelemetryEndpoint(companionEndpoint?: string): string {
+  try {
+    const url = new URL(defaultCompanionEndpoint(companionEndpoint));
+    url.protocol = url.protocol === 'https:' || url.protocol === 'wss:' ? 'wss:' : 'ws:';
+    url.pathname = '/ws/telemetry';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return 'ws://192.168.1.50:8000/ws/telemetry';
+  }
+}
+
+function inferTransportKind(endpoint?: string): TransportKind {
+  const protocol = endpointProtocol(endpoint);
+  if (protocol === 'ws' || protocol === 'wss') {
+    return 'websocket';
+  }
+  if (protocol === 'udp') {
+    return 'udp';
+  }
+  return 'http';
+}
+
+function buildMinimumFleet(defaultCompanionBaseUrl?: string): FleetConfig {
+  const endpoint = defaultCompanionEndpoint(defaultCompanionBaseUrl);
+  const fleet = cloneFleetConfig(mockFleetConfig);
+  const sourceDrone: DroneFleetEntry = fleet.drones[0] ?? {
+    drone_id: 'drone-01',
+    callsign: 'Primary drone',
+    role: 'leader',
+    transport: {
+      type: 'http',
+      endpoint,
+      api_key: '',
+      control_token: '',
+    },
+    endpoints: [endpoint, buildTelemetryEndpoint(endpoint)],
+    status: 'active',
+  };
+  const drone: DroneFleetEntry = {
+    ...sourceDrone,
+    drone_id: sourceDrone?.drone_id?.trim() || 'drone-01',
+    callsign: sourceDrone?.callsign?.trim() || 'Primary drone',
+    role: sourceDrone?.role?.trim() || 'leader',
+    transport: {
+      ...(sourceDrone?.transport ?? { type: 'http', endpoint: '' }),
+      type: inferTransportKind(endpoint),
+      endpoint,
+      api_key: sourceDrone?.transport?.api_key ?? '',
+      control_token: sourceDrone?.transport?.control_token ?? '',
+    },
+    endpoints: [endpoint, buildTelemetryEndpoint(endpoint)],
+    status: sourceDrone?.status ?? 'active',
+  };
+
+  return {
+    ...fleet,
+    default_transport: drone.transport.type,
+    drones: [drone],
+  };
+}
+
+function ensureRequiredSettingsShape(
+  settings: GroundStationUserSettings,
+  defaultCompanionBaseUrl?: string,
+): GroundStationUserSettings {
+  const next = cloneSettings(settings);
+  if (!next.profiles.length) {
+    next.profiles = [
+      {
+        profile_id: 'profile-default',
+        label: 'Primary profile',
+        companion_base_url: defaultCompanionBaseUrl,
+        selected_drone_id: 'drone-01',
+        fleet: buildMinimumFleet(defaultCompanionBaseUrl),
+      },
+    ];
+    next.active_profile_id = 'profile-default';
+    return next;
+  }
+
+  const activeProfile =
+    next.profiles.find((profile) => profile.profile_id === next.active_profile_id) ??
+    next.profiles[0];
+  next.active_profile_id = activeProfile.profile_id;
+
+  if (!activeProfile.label?.trim()) {
+    activeProfile.label = 'Primary profile';
+  }
+  if (!activeProfile.fleet) {
+    activeProfile.fleet = buildMinimumFleet(defaultCompanionBaseUrl);
+  }
+  if (!activeProfile.fleet.drones.length) {
+    activeProfile.fleet = buildMinimumFleet(defaultCompanionBaseUrl);
+  }
+  if (!activeProfile.selected_drone_id || !activeProfile.fleet.drones.some((drone) => drone.drone_id === activeProfile.selected_drone_id)) {
+    activeProfile.selected_drone_id = activeProfile.fleet.drones[0]?.drone_id;
+  }
+
+  return next;
+}
+
+function endpointLooksUsable(endpoint?: string): boolean {
+  const protocol = endpointProtocol(endpoint);
+  return Boolean(protocol && validSetupEndpointProtocols.has(protocol));
+}
+
+function validateRequiredSettings(settings: GroundStationUserSettings): SettingsSetupIssue[] {
+  const issues: SettingsSetupIssue[] = [];
+  const profile =
+    settings.profiles.find((entry) => entry.profile_id === settings.active_profile_id) ??
+    settings.profiles[0];
+
+  if (!settings.user_id || !settings.username) {
+    issues.push({ field: 'User', message: 'The settings must belong to a signed-in user.' });
+  }
+  if (!profile) {
+    issues.push({ field: 'Profile', message: 'Create at least one runtime profile.' });
+    return issues;
+  }
+  if (!profile.label?.trim()) {
+    issues.push({ field: 'Profile label', message: 'Enter a profile label.' });
+  }
+  if (!profile.fleet?.drones?.length) {
+    issues.push({ field: 'Drone', message: 'Add at least one drone connection.' });
+    return issues;
+  }
+
+  const drone =
+    profile.fleet.drones.find((entry) => entry.drone_id === profile.selected_drone_id) ??
+    profile.fleet.drones[0];
+  if (!drone.drone_id?.trim()) {
+    issues.push({ field: 'Drone ID', message: 'Enter a stable drone ID.' });
+  }
+  if (!drone.callsign?.trim()) {
+    issues.push({ field: 'Callsign', message: 'Enter a callsign for the primary drone.' });
+  }
+  if (!drone.transport?.type) {
+    issues.push({ field: 'Transport', message: 'Select a transport type.' });
+  }
+  if (!drone.transport?.endpoint?.trim()) {
+    issues.push({ field: 'Companion endpoint', message: 'Enter the companion endpoint with a protocol, such as http://192.168.1.50:8000.' });
+  } else if (!endpointLooksUsable(drone.transport.endpoint)) {
+    issues.push({ field: 'Companion endpoint', message: 'Use a full URL with http://, https://, ws://, wss://, or udp://.' });
+  }
+  if (!drone.transport?.api_key?.trim()) {
+    issues.push({ field: 'Api Key', message: 'Enter the API key copied from the companion install.' });
+  }
+
+  return issues;
 }
 
 function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const routeStorageKey = 'ground-station.route-draft.v1';
   const geotiffInputRef = useRef<HTMLInputElement | null>(null);
   const prescriptionInputRef = useRef<HTMLInputElement | null>(null);
-  const defaultSettings = useMemo(
-    () =>
-      createDefaultUserSettings(
-        undefined,
-        'pilot',
-        'Pilot',
-        cloneFleetConfig(mockFleetConfig),
-        defaultCompanionBaseUrl,
-      ),
-    [defaultCompanionBaseUrl],
-  );
   const [sessionState, setSessionState] = useState<GroundStationSessionState>({
     authenticated: false,
     has_users: false,
   });
-  const [appliedSettings, setAppliedSettings] = useState<GroundStationUserSettings>(defaultSettings);
-  const [settingsDraft, setSettingsDraft] = useState<GroundStationUserSettings>(defaultSettings);
+  const [settingsDraft, setSettingsDraft] = useState<GroundStationUserSettings>(emptyUserSettings);
   const [settingsMessage, setSettingsMessage] = useState('Sign in to load per-user connection profiles.');
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [requiredSetupOpen, setRequiredSetupOpen] = useState(false);
   const [statusSnapshot, setStatusSnapshot] = useState<CompanionSnapshot>(mockSnapshot);
   const [connectionState, setConnectionState] = useState<ConnectionState>('unknown');
   const [sourceLabel, setSourceLabel] = useState('mock data');
@@ -217,8 +436,8 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const [geotiffAssetId, setGeotiffAssetId] = useState<string | undefined>();
   const [geotiffStatus, setGeotiffStatus] = useState('no GeoTIFF loaded');
   const [geotiffBounds, setGeotiffBounds] = useState<[[number, number], [number, number]] | undefined>();
-  const [controlToken, setControlToken] = useState('');
   const [authorityStatus, setAuthorityStatus] = useState('not requested');
+  const [acquiringAuthorityDroneId, setAcquiringAuthorityDroneId] = useState<string | undefined>();
   const [prescriptionMessage, setPrescriptionMessage] = useState('no prescription loaded');
   const [calibrationMessage, setCalibrationMessage] = useState('no base station configured');
   const [farmMessage, setFarmMessage] = useState('farm integrations idle');
@@ -229,7 +448,6 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     connection: true,
     mission: true,
     shell: true,
-    session: true,
     settings: true,
   });
   const shellContext = useMemo(() => detectShellContext(), []);
@@ -245,28 +463,38 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     mount_type: 'tripod',
     notes: '',
   });
-  const activeProfile = useMemo(() => {
-    const current =
-      appliedSettings.profiles.find((profile) => profile.profile_id === appliedSettings.active_profile_id) ??
-      appliedSettings.profiles[0];
-    return current ?? defaultSettings.profiles[0];
-  }, [appliedSettings, defaultSettings.profiles]);
   const draftProfile = useMemo(() => {
     const current =
       settingsDraft.profiles.find((profile) => profile.profile_id === settingsDraft.active_profile_id) ??
       settingsDraft.profiles[0];
-    return current ?? defaultSettings.profiles[0];
-  }, [defaultSettings.profiles, settingsDraft]);
-  const companionBaseUrl = activeProfile?.companion_base_url?.trim() || defaultCompanionBaseUrl;
+    return current;
+  }, [settingsDraft]);
+  const activeProfile = draftProfile;
   const fleetConfig = activeProfile?.fleet ?? mockFleetConfig;
+  const activeDroneId = activeProfile?.selected_drone_id ?? activeProfile?.fleet.drones[0]?.drone_id;
+  const activeRuntimeDrone =
+    activeProfile?.fleet.drones.find((drone) => drone.drone_id === activeDroneId) ?? activeProfile?.fleet.drones[0];
+  const userAuthenticated = Boolean(sessionState.authenticated && sessionState.user);
+  const companionBaseUrl = userAuthenticated ? selectCompanionApiBase(activeRuntimeDrone, defaultCompanionBaseUrl) : undefined;
+  const telemetryBaseUrl = userAuthenticated ? selectTelemetryBase(activeRuntimeDrone, companionBaseUrl) : undefined;
   const companionApiKey = useMemo(() => {
-    const selectedDrone =
-      activeProfile?.fleet.drones.find((drone) => drone.drone_id === activeProfile.selected_drone_id) ??
-      activeProfile?.fleet.drones[0];
-    return selectedDrone?.transport.api_key?.trim();
-  }, [activeProfile]);
-  const activeDroneId = draftProfile?.selected_drone_id ?? fleetConfig.drones[0]?.drone_id;
-
+    return userAuthenticated ? activeRuntimeDrone?.transport.api_key?.trim() : undefined;
+  }, [activeRuntimeDrone, userAuthenticated]);
+  const controlToken = userAuthenticated ? activeRuntimeDrone?.transport.control_token?.trim() ?? '' : '';
+  const requiredSettingsIssues = useMemo(
+    () => (userAuthenticated ? validateRequiredSettings(settingsDraft) : []),
+    [settingsDraft, userAuthenticated],
+  );
+  const setupProfile =
+    settingsDraft.profiles.find((profile) => profile.profile_id === settingsDraft.active_profile_id) ??
+    settingsDraft.profiles[0];
+  const setupDrone =
+    setupProfile?.fleet.drones.find((drone) => drone.drone_id === setupProfile.selected_drone_id) ??
+    setupProfile?.fleet.drones[0];
+  const setupTelemetryEndpoint = setupDrone?.endpoints?.find((endpoint) => {
+    const protocol = endpointProtocol(endpoint);
+    return protocol === 'ws' || protocol === 'wss';
+  }) ?? buildTelemetryEndpoint(setupDrone?.transport.endpoint || defaultCompanionBaseUrl);
   function toggleSidebarSection(section: keyof typeof sidebarSections) {
     setSidebarSections((current) => ({
       ...current,
@@ -287,38 +515,33 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
         if (!session?.authenticated || !session.user) {
           setSessionState(session ?? { authenticated: false, has_users: false });
-          setAppliedSettings(defaultSettings);
-          setSettingsDraft(defaultSettings);
-          setSettingsMessage(session?.has_users ? 'Sign in to manage stored profiles.' : 'Create the first user to enable per-user settings.');
+          setSettingsDraft(emptyUserSettings);
+          setSettingsMessage('Sign in with the admin user to load stored settings.');
           return;
         }
 
         let saved = session.settings ?? (await loadUserSettings());
         if (!saved) {
-          saved = createDefaultUserSettings(
-            session.user.user_id,
-            session.user.username,
-            session.user.display_name ?? session.user.username,
-            cloneFleetConfig(mockFleetConfig),
-            defaultCompanionBaseUrl,
-          );
-          const created = await saveUserSettings(saved);
-          if (created) {
-            saved = created;
-          }
+          throw new Error('No settings found for the authenticated user.');
         }
 
         if (!cancelled) {
-          setSessionState({ ...session, settings: saved });
-          setAppliedSettings(saved);
-          setSettingsDraft(cloneSettings(saved));
-          setSettingsMessage(`Signed in as ${session.user.display_name ?? session.user.username}`);
+          const preparedSettings = ensureRequiredSettingsShape(saved, defaultCompanionBaseUrl);
+          const setupIssues = validateRequiredSettings(preparedSettings);
+          setSessionState({ ...session, settings: preparedSettings });
+          setSettingsDraft(cloneSettings(preparedSettings));
+          setRequiredSetupOpen(setupIssues.length > 0);
+          setSettingsMessage(
+            setupIssues.length
+              ? `Signed in as ${session.user.display_name ?? session.user.username}. Complete required setup.`
+              : `Signed in as ${session.user.display_name ?? session.user.username}`,
+          );
         }
       } catch {
         if (!cancelled) {
           setSessionState({ authenticated: false, has_users: false });
-          setAppliedSettings(defaultSettings);
-          setSettingsDraft(defaultSettings);
+          setSettingsDraft(emptyUserSettings);
+          setRequiredSetupOpen(false);
           setSettingsMessage('Settings service unavailable; sign in will be enabled when the local API is reachable.');
         }
       } finally {
@@ -333,13 +556,24 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     return () => {
       cancelled = true;
     };
-  }, [defaultCompanionBaseUrl, defaultSettings]);
+  }, [defaultCompanionBaseUrl]);
+
+  useEffect(() => {
+    if (!userAuthenticated) {
+      setRequiredSetupOpen(false);
+      return;
+    }
+
+    if (!settingsLoading && requiredSettingsIssues.length) {
+      setRequiredSetupOpen(true);
+    }
+  }, [requiredSettingsIssues.length, settingsLoading, userAuthenticated]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function refresh() {
-      if (!companionBaseUrl) {
+      if (!userAuthenticated || !companionBaseUrl) {
         setStatusSnapshot(mockSnapshot);
         setConnectionState('disconnected');
         setSourceLabel('mock data');
@@ -400,6 +634,12 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
     void refresh();
 
+    if (!userAuthenticated) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
     const timer = window.setInterval(() => {
       void refresh();
     }, 15000);
@@ -408,7 +648,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [companionApiKey, companionBaseUrl]);
+  }, [companionApiKey, companionBaseUrl, userAuthenticated]);
 
   useEffect(() => {
     saveStoredDraft(routeStorageKey, routeDraft);
@@ -422,36 +662,52 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     };
   }, [imageryOverlayUrl]);
 
-  async function handleLogin(request: GroundStationLoginRequest) {
+  async function handleLogin(request: GroundStationLoginRequest): Promise<boolean> {
     setSettingsLoading(true);
     try {
       const session = await loginUser(request);
+      if (request.create) {
+        if (session?.created) {
+          setSessionState({
+            authenticated: false,
+            has_users: true,
+            created: true,
+            created_username: session.created_username ?? request.username,
+          });
+          setSettingsDraft(emptyUserSettings);
+          setRequiredSetupOpen(false);
+          setSettingsMessage(`User ${session.created_username ?? request.username} created. Sign in with that username to continue.`);
+          return true;
+        }
+
+        setSettingsMessage('User creation failed. Choose a different username and try again.');
+        return false;
+      }
+
       if (!session?.authenticated || !session.user) {
         setSettingsMessage('Login failed. Check the username and password.');
-        return;
+        return false;
       }
 
       let saved = session.settings ?? (await loadUserSettings());
       if (!saved) {
-        saved = createDefaultUserSettings(
-          session.user.user_id,
-          session.user.username,
-          session.user.display_name ?? session.user.username,
-          cloneFleetConfig(mockFleetConfig),
-          defaultCompanionBaseUrl,
-        );
-        const created = await saveUserSettings(saved);
-        if (created) {
-          saved = created;
-        }
+        throw new Error('No settings found for the authenticated user.');
       }
 
-      setSessionState({ ...session, settings: saved });
-      setAppliedSettings(saved);
-      setSettingsDraft(cloneSettings(saved));
-      setSettingsMessage(`Signed in as ${session.user.display_name ?? session.user.username}`);
+      const preparedSettings = ensureRequiredSettingsShape(saved, defaultCompanionBaseUrl);
+      const setupIssues = validateRequiredSettings(preparedSettings);
+      setSessionState({ ...session, settings: preparedSettings });
+      setSettingsDraft(cloneSettings(preparedSettings));
+      setRequiredSetupOpen(setupIssues.length > 0);
+      setSettingsMessage(
+        setupIssues.length
+          ? `Signed in as ${session.user.display_name ?? session.user.username}. Complete required setup.`
+          : `Signed in as ${session.user.display_name ?? session.user.username}`,
+      );
+      return true;
     } catch (error) {
-      setSettingsMessage(`Login failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      setSettingsMessage(`${request.create ? 'User creation' : 'Login'} failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      return false;
     } finally {
       setSettingsLoading(false);
     }
@@ -462,8 +718,8 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     try {
       await logoutUser();
       setSessionState({ authenticated: false, has_users: sessionState.has_users });
-      setAppliedSettings(defaultSettings);
-      setSettingsDraft(defaultSettings);
+      setSettingsDraft(emptyUserSettings);
+      setRequiredSetupOpen(false);
       setSettingsMessage('Signed out. Log back in to restore saved profiles.');
     } catch (error) {
       setSettingsMessage(`Sign out failed: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -480,7 +736,6 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         throw new Error('settings save failed');
       }
 
-      setAppliedSettings(cloneSettings(saved));
       setSettingsDraft(cloneSettings(saved));
       setSessionState((current) => ({
         ...current,
@@ -488,9 +743,125 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         has_users: true,
         settings: saved,
       }));
-      setSettingsMessage('Saved user settings and applied the active profile.');
+      const setupIssues = validateRequiredSettings(saved);
+      setRequiredSetupOpen(setupIssues.length > 0);
+      setSettingsMessage(
+        setupIssues.length
+          ? 'Saved settings, but required connection setup is still incomplete.'
+          : 'Saved user settings and applied the active profile.',
+      );
     } catch (error) {
       setSettingsMessage(`Save failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  function updateRequiredSetupProfile(
+    updater: (profile: GroundStationUserSettings['profiles'][number]) => GroundStationUserSettings['profiles'][number],
+  ) {
+    setSettingsDraft((current) => {
+      const prepared = ensureRequiredSettingsShape(current, defaultCompanionBaseUrl);
+      const active =
+        prepared.profiles.find((profile) => profile.profile_id === prepared.active_profile_id) ??
+        prepared.profiles[0];
+      return {
+        ...prepared,
+        active_profile_id: active.profile_id,
+        profiles: prepared.profiles.map((profile) => (profile.profile_id === active.profile_id ? updater(profile) : profile)),
+      };
+    });
+  }
+
+  function updateRequiredSetupDrone(updater: (drone: DroneFleetEntry) => DroneFleetEntry) {
+    setSettingsDraft((current) => {
+      const prepared = ensureRequiredSettingsShape(current, defaultCompanionBaseUrl);
+      const active =
+        prepared.profiles.find((profile) => profile.profile_id === prepared.active_profile_id) ??
+        prepared.profiles[0];
+      const activeDrone =
+        active.fleet.drones.find((drone) => drone.drone_id === active.selected_drone_id) ??
+        active.fleet.drones[0];
+
+      return {
+        ...prepared,
+        active_profile_id: active.profile_id,
+        profiles: prepared.profiles.map((profile) => {
+          if (profile.profile_id !== active.profile_id) {
+            return profile;
+          }
+
+          let selectedDroneId = profile.selected_drone_id;
+          const drones = profile.fleet.drones.map((drone) => {
+            if (drone.drone_id !== activeDrone.drone_id) {
+              return drone;
+            }
+
+            const nextDrone = updater(drone);
+            if (profile.selected_drone_id === drone.drone_id) {
+              selectedDroneId = nextDrone.drone_id;
+            }
+            return nextDrone;
+          });
+
+          return {
+            ...profile,
+            selected_drone_id: selectedDroneId || drones[0]?.drone_id,
+            fleet: {
+              ...profile.fleet,
+              default_transport: drones[0]?.transport.type ?? profile.fleet.default_transport,
+              drones,
+            },
+          };
+        }),
+      };
+    });
+  }
+
+  function updateRequiredSetupTelemetryEndpoint(endpoint: string) {
+    updateRequiredSetupDrone((drone) => {
+      const primaryEndpoint = drone.transport.endpoint || defaultCompanionEndpoint(defaultCompanionBaseUrl);
+      const nonTelemetryEndpoints = (drone.endpoints ?? [])
+        .filter((entry) => {
+          const protocol = endpointProtocol(entry);
+          return protocol !== 'ws' && protocol !== 'wss';
+        })
+        .filter((entry) => entry !== primaryEndpoint);
+      return {
+        ...drone,
+        endpoints: [primaryEndpoint, endpoint, ...nonTelemetryEndpoints].filter((entry) => entry.trim()),
+      };
+    });
+  }
+
+  async function handleSaveRequiredSetup() {
+    const preparedSettings = ensureRequiredSettingsShape(settingsDraft, defaultCompanionBaseUrl);
+    const setupIssues = validateRequiredSettings(preparedSettings);
+    setSettingsDraft(cloneSettings(preparedSettings));
+    if (setupIssues.length) {
+      setRequiredSetupOpen(true);
+      setSettingsMessage('Complete the required connection fields before saving setup.');
+      return;
+    }
+
+    setSettingsSaving(true);
+    try {
+      const saved = await saveUserSettings(preparedSettings);
+      if (!saved) {
+        throw new Error('settings save failed');
+      }
+
+      setSettingsDraft(cloneSettings(saved));
+      setSessionState((current) => ({
+        ...current,
+        authenticated: true,
+        has_users: true,
+        settings: saved,
+      }));
+      setRequiredSetupOpen(false);
+      setSettingsMessage('Saved required drone setup and applied the active profile.');
+    } catch (error) {
+      setSettingsMessage(`Setup save failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       setSettingsSaving(false);
     }
@@ -510,9 +881,75 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     }));
   }
 
+  function updateDraftDroneTransport(
+    profileId: string,
+    droneId: string,
+    updater: (transport: DroneTransport) => DroneTransport,
+  ) {
+    setSettingsDraft((current) => ({
+      ...current,
+      profiles: current.profiles.map((profile) =>
+        profile.profile_id === profileId
+          ? {
+              ...profile,
+              fleet: {
+                ...profile.fleet,
+                drones: profile.fleet.drones.map((drone) =>
+                  drone.drone_id === droneId
+                    ? {
+                        ...drone,
+                        transport: updater(drone.transport),
+                      }
+                    : drone,
+                ),
+              },
+            }
+          : profile,
+      ),
+    }));
+  }
+
+  function storeDraftControlToken(profileId: string | undefined, droneId: string | undefined, token: string) {
+    if (!profileId || !droneId) {
+      return;
+    }
+
+    updateDraftDroneTransport(profileId, droneId, (transport) => ({
+      ...transport,
+      control_token: token,
+    }));
+  }
+
+  async function handleAcquireAuthority(profileId: string, droneId: string) {
+    const profile = settingsDraft.profiles.find((entry) => entry.profile_id === profileId);
+    const drone = profile?.fleet.drones.find((entry) => entry.drone_id === droneId);
+    const apiBase = selectCompanionApiBase(drone, defaultCompanionBaseUrl);
+
+    if (!drone || !apiBase) {
+      setAuthorityStatus('api endpoint missing');
+      return;
+    }
+
+    setAcquiringAuthorityDroneId(droneId);
+    try {
+      const authority = await acquireControlAuthority(
+        apiBase,
+        drone.transport.api_key?.trim() || undefined,
+        `gs-${routeStorageKey}-${droneId}`,
+        'ground-station',
+      );
+      if (authority?.token) {
+        storeDraftControlToken(profileId, droneId, authority.token);
+      }
+      setAuthorityStatus(authority?.active ? 'authority acquired' : authority?.token ? 'authority request sent' : 'authority request failed');
+    } finally {
+      setAcquiringAuthorityDroneId(undefined);
+    }
+  }
+
   const telemetryStream = useTelemetryStream(
     companionApiKey || undefined,
-    companionBaseUrl,
+    telemetryBaseUrl,
     statusSnapshot.telemetry ?? mockSnapshot.telemetry,
   );
   const telemetry = telemetryStream.latest ?? statusSnapshot.telemetry ?? mockSnapshot.telemetry;
@@ -570,7 +1007,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const prescriptionDutyCycle = prescriptionStatus?.recommended_duty_cycle;
   const prescriptionDutyCyclePercent = typeof prescriptionDutyCycle === 'number' ? prescriptionDutyCycle * 100 : undefined;
 
-  const boundaryCenter = useMemo<LatLngPoint | undefined>(() => {
+  const boundaryCenter = useMemo<LatLngPoint>(() => {
     const boundaryCenterPoint = computePolygonCenter(boundaryDraft);
     if (boundaryCenterPoint) {
       return boundaryCenterPoint;
@@ -591,7 +1028,6 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       : [boundaryCenter.latitude, boundaryCenter.longitude];
   const surveyPreview = useMemo(() => buildSurveyPreview(boundaryDraft), [boundaryDraft]);
   const breadcrumb = telemetryStream.samples;
-  const fleetSource: FleetMarker[] = (fleetStatus?.drones?.length ? fleetStatus.drones : fleetConfig.drones) as FleetMarker[];
   const coverageOverlay = useMemo(
     () => [
       ...surveyPreview.flatMap((segment, segmentIndex) =>
@@ -627,8 +1063,10 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
   const fleetMarkers = useMemo(
     () =>
-      fleetSource.map((drone, index) => {
-        const livePosition = drone.position;
+      fleetConfig.drones.map((drone, index) => {
+        const liveDrone = fleetStatus?.drones?.find((entry) => entry.drone_id === drone.drone_id);
+        const fleetEntry = (liveDrone ?? drone) as FleetMarker;
+        const livePosition = fleetEntry.position;
         const position =
           livePosition?.latitude !== undefined && livePosition.longitude !== undefined
             ? {
@@ -652,15 +1090,13 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
                 };
 
         return {
-          ...drone,
-          active: drone.drone_id === activeDroneId || drone.drone_id === fleetStatus?.self_drone_id,
+          ...fleetEntry,
+          active: fleetEntry.drone_id === activeDroneId || fleetEntry.drone_id === fleetStatus?.self_drone_id,
           position,
         };
       }),
-    [activeDroneId, fleetSource, fleetStatus?.self_drone_id, mapCenter, vehicle?.heading, vehicle?.location?.altitude, vehicle?.location?.latitude, vehicle?.location?.longitude],
+    [activeDroneId, fleetConfig.drones, fleetStatus?.drones, fleetStatus?.self_drone_id, mapCenter, vehicle?.heading, vehicle?.location?.altitude, vehicle?.location?.latitude, vehicle?.location?.longitude],
   );
-  const activeDrone = fleetMarkers.find((drone) => drone.drone_id === activeDroneId) ?? fleetMarkers[0];
-
   function addBoundaryPoint(point: LatLngPoint) {
     if (missionMode !== 'boundary') {
       return;
@@ -736,9 +1172,9 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       );
       tokenToUse = authority?.token ?? '';
       if (tokenToUse) {
-        setControlToken(tokenToUse);
+        storeDraftControlToken(activeProfile?.profile_id, activeDroneId, tokenToUse);
       }
-      setAuthorityStatus(authority?.active ? 'authority acquired' : 'authority request sent');
+      setAuthorityStatus(authority?.active ? 'authority acquired' : authority?.token ? 'authority request sent' : 'authority request failed');
     }
     if (!tokenToUse) {
       setRouteMessage(`${statusLabel} requires control authority`);
@@ -1099,7 +1535,215 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     geotiffInputRef.current?.click();
   }
 
-  const activeSidebarDrone = activeProfile?.fleet.drones.find((drone) => drone.drone_id === activeDroneId) ?? fleetConfig.drones[0];
+  const activeSidebarDrone = activeRuntimeDrone ?? fleetConfig.drones[0];
+  const settingsPanel = (
+    <UserSettingsPanel
+      authenticated={sessionState.authenticated}
+      hasUsers={sessionState.has_users}
+      loading={settingsLoading}
+      saving={settingsSaving}
+      message={settingsMessage}
+      sessionUser={sessionState.user}
+      settingsDraft={settingsDraft}
+      defaultCompanionBaseUrl={defaultCompanionBaseUrl}
+      authorityStatus={authorityStatus}
+      acquiringAuthorityDroneId={acquiringAuthorityDroneId}
+      onLogin={handleLogin}
+      onLogout={handleLogout}
+      onSave={handleSaveSettings}
+      onDraftChange={setSettingsDraft}
+      onAcquireAuthority={handleAcquireAuthority}
+      collapsed={userAuthenticated ? !sidebarSections.settings : false}
+      onToggleCollapse={() => {
+        if (userAuthenticated) {
+          toggleSidebarSection('settings');
+        }
+      }}
+    />
+  );
+  const requiredSetupModal = userAuthenticated && requiredSetupOpen ? (
+    <div className="settings-modal-backdrop" role="presentation">
+      <div className="settings-modal setup-modal" role="dialog" aria-modal="true" aria-labelledby="required-setup-title">
+        <div className="settings-modal-head">
+          <div>
+            <span className="panel-label">Required setup</span>
+            <h3 id="required-setup-title">Complete drone connection settings</h3>
+          </div>
+        </div>
+
+        <div className="setup-issue-list">
+          {requiredSettingsIssues.length ? (
+            requiredSettingsIssues.map((issue) => (
+              <div className="setup-issue" key={`${issue.field}-${issue.message}`}>
+                <strong>{issue.field}</strong>
+                <span>{issue.message}</span>
+              </div>
+            ))
+          ) : (
+            <div className="setup-issue">
+              <strong>Ready</strong>
+              <span>Required fields are complete. Save setup to continue.</span>
+            </div>
+          )}
+        </div>
+
+        <div className="config-grid setup-config-grid">
+          <label className="field">
+            <span>Profile label</span>
+            <input
+              value={setupProfile?.label ?? ''}
+              onChange={(event) =>
+                updateRequiredSetupProfile((profile) => ({
+                  ...profile,
+                  label: event.target.value,
+                }))
+              }
+              placeholder="Primary profile"
+            />
+          </label>
+          <label className="field">
+            <span>Drone ID</span>
+            <input
+              value={setupDrone?.drone_id ?? ''}
+              onChange={(event) =>
+                updateRequiredSetupDrone((drone) => ({
+                  ...drone,
+                  drone_id: event.target.value,
+                }))
+              }
+              placeholder="drone-01"
+            />
+          </label>
+          <label className="field">
+            <span>Callsign</span>
+            <input
+              value={setupDrone?.callsign ?? ''}
+              onChange={(event) =>
+                updateRequiredSetupDrone((drone) => ({
+                  ...drone,
+                  callsign: event.target.value,
+                }))
+              }
+              placeholder="Alpha"
+            />
+          </label>
+          <label className="field">
+            <span>Transport</span>
+            <select
+              value={setupDrone?.transport.type ?? 'http'}
+              onChange={(event) =>
+                updateRequiredSetupDrone((drone) => ({
+                  ...drone,
+                  transport: {
+                    ...drone.transport,
+                    type: event.target.value as TransportKind,
+                  },
+                }))
+              }
+            >
+              {setupTransportOptions.map((transport) => (
+                <option key={transport} value={transport}>
+                  {transport}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Companion endpoint</span>
+            <input
+              value={setupDrone?.transport.endpoint ?? ''}
+              onChange={(event) =>
+                updateRequiredSetupDrone((drone) => {
+                  const endpoint = event.target.value;
+                  const currentTelemetryEndpoint =
+                    drone.endpoints?.find((entry) => {
+                      const protocol = endpointProtocol(entry);
+                      return protocol === 'ws' || protocol === 'wss';
+                    }) ?? buildTelemetryEndpoint(endpoint);
+                  return {
+                    ...drone,
+                    transport: {
+                      ...drone.transport,
+                      endpoint,
+                    },
+                    endpoints: [endpoint, currentTelemetryEndpoint].filter((entry) => entry.trim()),
+                  };
+                })
+              }
+              placeholder="http://192.168.1.50:8000"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <label className="field">
+            <span>Telemetry endpoint</span>
+            <input
+              value={setupTelemetryEndpoint}
+              onChange={(event) => updateRequiredSetupTelemetryEndpoint(event.target.value)}
+              placeholder="ws://192.168.1.50:8000/ws/telemetry"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <label className="field">
+            <span>Api Key</span>
+            <input
+              value={setupDrone?.transport.api_key ?? ''}
+              onChange={(event) =>
+                updateRequiredSetupDrone((drone) => ({
+                  ...drone,
+                  transport: {
+                    ...drone.transport,
+                    api_key: event.target.value,
+                  },
+                }))
+              }
+              placeholder="companion API key"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+        </div>
+
+        <div className="settings-actions">
+          <button type="button" className="secondary-button" onClick={handleSaveRequiredSetup} disabled={settingsSaving || settingsLoading}>
+            {settingsSaving ? 'Saving...' : 'Save setup'}
+          </button>
+          <button type="button" className="ghost-button" onClick={handleLogout} disabled={settingsSaving || settingsLoading}>
+            Sign out
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  if (!userAuthenticated) {
+    return (
+      <div className="app-shell login-shell">
+        <aside className="sidebar">
+          <div className="brand">
+            <div className="brand-mark">GS</div>
+            <div>
+              <span className="eyebrow">Pixhawk companion</span>
+              <h1>Ground Station</h1>
+            </div>
+          </div>
+
+          {settingsPanel}
+        </aside>
+
+        <main className="content login-content">
+          <header className="hero login-hero">
+            <div>
+              <span className="eyebrow">Field operations cockpit</span>
+              <h2>Mission control for spraying, mapping, and fleet awareness.</h2>
+              <p>Sign in to load the user profile that owns drone connections, API keys, authority tokens, and operational panels.</p>
+            </div>
+          </header>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -1206,67 +1850,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
           {sidebarSections.shell ? <ShellStatusPanel shellContext={shellContext} runtimeConfig={runtimeConfig} /> : null}
         </section>
 
-        <section className="sidebar-panel sidebar-accordion">
-          <div className="sidebar-panel-head">
-            <div>
-              <span className="panel-label">Session</span>
-              <h3>Control authority</h3>
-            </div>
-            <button type="button" className="ghost-button" onClick={() => toggleSidebarSection('session')}>
-              {sidebarSections.session ? 'Collapse' : 'Expand'}
-            </button>
-          </div>
-          {sidebarSections.session ? (
-            <div className="stack">
-              <label className="field">
-                <span>Control token</span>
-                <input
-                  value={controlToken}
-                  onChange={(event) => setControlToken(event.target.value)}
-                  placeholder="x-control-token"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={async () => {
-                  const authority = await acquireControlAuthority(
-                    companionBaseUrl,
-                    companionApiKey || undefined,
-                    `gs-${routeStorageKey}`,
-                    'ground-station',
-                  );
-                  if (authority?.token) {
-                    setControlToken(authority.token);
-                  }
-                  setAuthorityStatus(authority?.active ? 'authority acquired' : 'authority request sent');
-                }}
-              >
-                Acquire authority
-              </button>
-              <p className="hint">Connects to `/ws/telemetry` and the REST snapshot endpoints when configured.</p>
-            </div>
-          ) : null}
-        </section>
-
-        <UserSettingsPanel
-          authenticated={sessionState.authenticated}
-          hasUsers={sessionState.has_users}
-          loading={settingsLoading}
-          saving={settingsSaving}
-          message={settingsMessage}
-          sessionUser={sessionState.user}
-          settingsDraft={settingsDraft}
-          defaultCompanionBaseUrl={defaultCompanionBaseUrl}
-          onLogin={handleLogin}
-          onLogout={handleLogout}
-          onSave={handleSaveSettings}
-          onDraftChange={setSettingsDraft}
-          collapsed={!sidebarSections.settings}
-          onToggleCollapse={() => toggleSidebarSection('settings')}
-        />
+        {settingsPanel}
       </aside>
 
       <main className="content">
@@ -1348,7 +1932,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
               onMapClick={handleMapClick}
               onBoundaryChange={setBoundaryPoints}
               onWaypointsChange={setWaypointPoints}
-              activeDroneId={activeDrone?.drone_id}
+              activeDroneId={activeDroneId}
               onSelectDrone={selectDraftActiveDrone}
             />
 
@@ -1406,7 +1990,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
           <FleetPanel
             drones={fleetMarkers}
-            activeDroneId={activeDrone?.drone_id}
+            activeDroneId={activeDroneId}
             onSelectDrone={selectDraftActiveDrone}
           />
         </section>
@@ -1691,6 +2275,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         />
         </section>
       </main>
+      {requiredSetupModal}
     </div>
   );
 }
