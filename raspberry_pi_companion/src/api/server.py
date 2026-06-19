@@ -876,11 +876,14 @@ class ServerAPI:
                 ),
                 local_state_getter=self.telemetry_manager.get_current,
             )
+        telemetry_history_getter = getattr(self.telemetry_manager, "get_history", None)
+        if telemetry_history_getter is None:
+            telemetry_history_getter = lambda seconds=None: []
         self.calibration_manager = calibration_manager or CalibrationWorkflowManager(
             CalibrationWorkflowConfig(
                 database_file=Path(tempfile.mkdtemp(prefix="calibration-")) / "workflow.sqlite3",
             ),
-            telemetry_history_getter=self.telemetry_manager.get_history,
+            telemetry_history_getter=telemetry_history_getter,
         )
         self.farm_manager = farm_manager or FarmIntegrationManager(
             FarmIntegrationConfig(

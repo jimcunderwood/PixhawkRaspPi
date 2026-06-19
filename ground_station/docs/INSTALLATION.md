@@ -4,6 +4,7 @@ The ground station is a web application, so "installation" means either:
 
 - running the Vite dev server locally on Linux, macOS, or Windows
 - building and serving the web UI in Docker
+- wrapping the built web UI in the Electron desktop shell
 - wrapping the same web build in the Capacitor mobile shell
 
 The web UI reads the companion URL at runtime, so you can point one ground
@@ -129,6 +130,24 @@ docker compose --profile ground-station up -d
 Set `COMPANION_BASE_URL` in the host environment or a Compose `.env` file so
 the web container can reach the companion on the other machine.
 
+## Desktop
+
+The desktop shell reuses the built web app and launches it inside Electron.
+After installing Node.js 20+ and npm, run:
+
+```bash
+cd PixhawkRaspPi/ground_station/apps/web
+npm install
+npm run build
+
+cd ../desktop
+npm install
+npm run dev
+```
+
+Set `COMPANION_BASE_URL` before launching if you want the desktop shell to talk
+to a live companion instance.
+
 ## Mobile Shell
 
 The Capacitor shell reuses the same web build. After the web UI is built, run:
@@ -140,4 +159,3 @@ npm run sync:web
 
 Use `CAPACITOR_SERVER_URL` when you want the mobile shell to point at a hosted
 web UI during development.
-

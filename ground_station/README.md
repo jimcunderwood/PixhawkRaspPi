@@ -45,6 +45,8 @@ ground_station/
 - Treat transport as an adapter layer so web, desktop, and mobile can each use the best available channel.
 - Avoid hard-coding `http` as the only control path; the app should tolerate WebSocket, local IPC, UDP/MAVLink bridge, or other device-appropriate links.
 - The first working web shell now lives in `apps/web/` and is wired for map, telemetry, and mission drafting.
+- The desktop shell lives in `apps/desktop/` and serves the built web bundle in an Electron wrapper.
+- The mobile shell lives in `apps/mobile/` and wraps the same web bundle through Capacitor.
 - Shared mission planning, telemetry parsing, and companion API helpers live under `shared/` so desktop and mobile shells can reuse the same behavior without duplicate logic.
 - Shared UI atoms and reusable panels live under `packages/ui/`; platform shells should compose those instead of re-implementing common status/metric widgets.
 - Route save/load/upload should be implemented against the shared mission helpers first, then consumed by web, desktop, and mobile shells from the same code path.
@@ -87,6 +89,17 @@ docker compose --profile ground-station up -d
 The same Compose file can run the companion on a Pi and the web UI on a
 separate workstation. Set `COMPANION_BASE_URL` in the host environment or a
 Compose `.env` file so the ground station reaches the other machine at runtime.
+
+## Desktop
+
+The desktop shell lives in `apps/desktop/` and reuses the built web bundle.
+See [apps/desktop/README.md](apps/desktop/README.md) for the Electron launch
+steps.
+
+## Mobile
+
+The mobile shell lives in `apps/mobile/` and reuses the same shared web build.
+See [apps/mobile/README.md](apps/mobile/README.md) for Capacitor build steps.
 
 ## Recommended Ground Station Contract
 

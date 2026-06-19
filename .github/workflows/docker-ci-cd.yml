@@ -55,8 +55,8 @@ jobs:
           target: runtime
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}-companion:latest
-            ghcr.io/${{ github.repository }}-companion:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/pixhawkrasppi-companion:latest
+            ghcr.io/${{ github.repository_owner }}/pixhawkrasppi-companion:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -109,7 +109,7 @@ jobs:
           target: runtime
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}-ground-station-web:latest
-            ghcr.io/${{ github.repository }}-ground-station-web:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/pixhawkrasppi-ground-station-web:latest
+            ghcr.io/${{ github.repository_owner }}/pixhawkrasppi-ground-station-web:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

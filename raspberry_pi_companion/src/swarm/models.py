@@ -185,7 +185,7 @@ class SwarmFusionState(BaseModel):
     swarm_id: str = Field(..., min_length=1)
     self_drone_id: str = Field(..., min_length=1)
     fused_location: Dict[str, float]
-    raw_location: Optional[Dict[str, float]] = None
+    raw_location: Optional[Dict[str, object]] = None
     confidence: float = Field(..., ge=0.0, le=1.0)
     peer_count: int = Field(..., ge=0)
     reference_node_id: Optional[str] = None
@@ -209,4 +209,3 @@ class SwarmStatus(BaseModel):
     fusion_mode: SwarmFusionMode
     last_update: Optional[str] = None
     alerts: List[SwarmSeparationAlert] = Field(default_factory=list)
-
