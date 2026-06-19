@@ -67,6 +67,28 @@ export type FarmIntegrationStatus = {
   updated_at?: number;
 };
 
+export type FlightLogSyncStatus = {
+  status?: string;
+  running?: boolean;
+  last_landing_at?: number | null;
+  last_armed_at?: number | null;
+  base_directory?: string;
+  updated_at?: number | null;
+};
+
+export type FlightLogSyncHistoryEntry = {
+  archive_path?: string;
+  name?: string;
+  session?: string;
+  reason?: string;
+  created_at?: number;
+  created_at_iso?: string;
+  pixhawk_file_count?: number;
+  companion_file_count?: number;
+  size_bytes?: number;
+  updated_at?: number;
+};
+
 export type SwarmCoordinationStatus = {
   swarm_id?: string;
   self_drone_id?: string;
@@ -295,6 +317,7 @@ export type CompanionSnapshot = {
   prescription?: PrescriptionStatus;
   calibration?: CalibrationStatus;
   farm?: FarmIntegrationStatus;
+  flight_log_sync?: FlightLogSyncStatus;
   swarm_coordination?: SwarmCoordinationStatus;
 };
 

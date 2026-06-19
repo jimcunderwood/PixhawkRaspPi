@@ -8,6 +8,7 @@ Python application for Raspberry Pi 4 connected to Pixhawk 4 flight controller.
 - **Mission Planning**: Waypoint-based missions with field boundaries and survey grids
 - **Live Telemetry**: Real-time vehicle state, GPS, battery, and attitude data
 - **Telemetry Archiving**: SQLite time-series storage with automatic rotation and compact history queries
+- **Replayable History**: Telemetry, audit, calibration, farm, swarm, and flight-log state can be browsed and re-run from the dashboard
 - **Navigation Safety**: Configurable obstacle avoidance and terrain-following support
 - **Companion Safety**: Altitude geofencing, no-fly zones, emergency landing zones, and progressive failsafes
 - **Payload Control**: Spray pump, camera (photo/video), flow sensor
@@ -105,8 +106,8 @@ python main.py
 ```
 
 The companion exposes the live API that the ground station uses at runtime,
-including weather, obstacle-scan, swarm, calibration, and farm integration
-state.
+including weather, obstacle-scan, swarm, calibration, farm integration, and
+flight-log sync history/replay state.
 
 ## Docker
 
@@ -160,9 +161,24 @@ using a TIFF payload and bounding-box query parameters. The companion stores
 metadata in SQLite, keeps the raster and preview on disk, and exposes the
 preview at `GET /api/v1/mapping/geotiff/{asset_id}/preview`.
 
+Flight-log bundles are tracked with `GET /api/log-sync/status`,
+`GET /api/log-sync/history`, and `POST /api/log-sync/replay`, which lets
+the ground station browse recent archives and re-run them from the dashboard.
+
 ### Health Check
 ```
 GET /health
+```
+
+### System Info
+```
+GET /info
+```
+
+### Readiness
+```
+GET /readiness
+GET /v1/readiness
 ```
 
 ### Command Authority

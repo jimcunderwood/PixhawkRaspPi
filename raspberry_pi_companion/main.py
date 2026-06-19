@@ -106,10 +106,10 @@ class CompanionComputer:
             # Initialize connection manager
             logger.info("Initializing MAVLink connection...")
             self.connection_manager = ConnectionManager(config.mavlink)
-            
             if not self.connection_manager.connect():
-                logger.error("Failed to connect to Pixhawk")
-                return False
+                logger.warning(
+                    "Pixhawk is unavailable during startup; continuing in degraded mode so the API stays online."
+                )
 
             # Initialize mission planner
             logger.info("Initializing mission planner...")
@@ -118,7 +118,10 @@ class CompanionComputer:
                 config.mission.storage_file,
                 navigation_config=_startup_navigation_config(),
             )
-            self.connection_manager.apply_navigation_config(_startup_navigation_config())
+            if self.connection_manager.connected:
+                self.connection_manager.apply_navigation_config(_startup_navigation_config())
+            else:
+                logger.info("Skipping initial Pixhawk navigation config because no vehicle is connected.")
 
             # Initialize payload controller
             logger.info("Initializing payload controller...")
@@ -202,6 +205,7 @@ class CompanionComputer:
                 self.mission_planner,
                 self.payload_controller,
                 self.telemetry_manager,
+                flight_log_sync_manager=self.flight_log_sync_manager,
                 swarm_manager=self.swarm_manager,
                 calibration_manager=self.calibration_manager,
                 farm_manager=self.farm_manager,

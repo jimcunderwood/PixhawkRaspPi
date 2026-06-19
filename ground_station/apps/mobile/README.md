@@ -24,3 +24,7 @@ CAPACITOR_SERVER_URL=http://192.168.1.20:4173
 If you want the mobile shell to use the same runtime companion URL as the web
 app, set `COMPANION_BASE_URL` in the hosted web UI environment before building
 the mobile bundle.
+
+The mobile shell should reuse the same shared mission, calibration, farm, and
+flight-log panels as the web and desktop shells so operators get the same
+workflow coverage on a tablet or phone.

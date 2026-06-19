@@ -4,6 +4,8 @@ import type {
   EdgeAiStatus,
   FleetStatus,
   FarmIntegrationStatus,
+  FlightLogSyncStatus,
+  FlightLogSyncHistoryEntry,
   HealthResponse,
   MissionStats,
   NavigationStatus,
@@ -176,10 +178,10 @@ export async function loadCompanionSnapshot(
   apiKey?: string,
   baseUrl?: string,
 ): Promise<CompanionSnapshot> {
-  const [health, vehicle, readiness, safety, mission, navigation, weather, edgeAi, telemetry, fleet, prescription, calibration, farm, swarmCoordination] = await Promise.allSettled([
+  const [health, vehicle, readiness, safety, mission, navigation, weather, edgeAi, telemetry, fleet, prescription, calibration, farm, flightLogSync, swarmCoordination] = await Promise.allSettled([
     requestJson<HealthResponse>('/health', { apiKey, baseUrl }),
     requestJson<{ data?: VehicleStatus }>('/api/vehicle/status', { apiKey, baseUrl }),
-    requestJson<{ data?: ReadinessStatus }>('/api/readiness', { apiKey, baseUrl }),
+    requestJson<{ data?: ReadinessStatus }>('/readiness', { apiKey, baseUrl }),
     requestJson<{ data?: SafetyStatus }>('/api/safety/status', { apiKey, baseUrl }),
     requestJson<{ data?: MissionStats }>('/api/mission/stats', { apiKey, baseUrl }),
     requestJson<{ data?: NavigationStatus }>('/api/navigation/config', { apiKey, baseUrl }),
@@ -190,6 +192,7 @@ export async function loadCompanionSnapshot(
     requestJson<{ data?: PrescriptionStatus }>('/api/payload/prescription/status', { apiKey, baseUrl }),
     requestJson<{ data?: CalibrationStatus }>('/api/calibration/status', { apiKey, baseUrl }),
     requestJson<{ data?: FarmIntegrationStatus }>('/api/farm/status', { apiKey, baseUrl }),
+    requestJson<{ data?: FlightLogSyncStatus }>('/api/log-sync/status', { apiKey, baseUrl }),
     requestJson<{ data?: SwarmCoordinationStatus }>('/api/swarm/coordination', { apiKey, baseUrl }),
   ]);
 
@@ -207,8 +210,45 @@ export async function loadCompanionSnapshot(
     prescription: prescription.status === 'fulfilled' ? extractData(prescription.value) : undefined,
     calibration: calibration.status === 'fulfilled' ? extractData(calibration.value) : undefined,
     farm: farm.status === 'fulfilled' ? extractData(farm.value) : undefined,
+    flight_log_sync: flightLogSync.status === 'fulfilled' ? extractData(flightLogSync.value) : undefined,
     swarm_coordination: swarmCoordination.status === 'fulfilled' ? extractData(swarmCoordination.value) : undefined,
   };
+}
+
+export async function loadFlightLogSyncHistory(
+  apiKey?: string,
+  baseUrl?: string,
+): Promise<FlightLogSyncHistoryEntry[]> {
+  try {
+    const payload = await requestJson<{ data?: { bundles?: FlightLogSyncHistoryEntry[] } }>('/api/log-sync/history', {
+      apiKey,
+      baseUrl,
+    });
+    return payload.data?.bundles ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function replayFlightLogSyncBundle(
+  archivePath: string,
+  apiKey?: string,
+  controlToken?: string,
+  baseUrl?: string,
+  upload = false,
+): Promise<FlightLogSyncHistoryEntry | undefined> {
+  try {
+    const payload = await requestJsonWithBody<{ data?: FlightLogSyncHistoryEntry }>(
+      '/api/log-sync/replay',
+      JSON.stringify({ archive_path: archivePath, upload }),
+      { apiKey, controlToken, baseUrl },
+      'POST',
+      { 'content-type': 'application/json' },
+    );
+    return extractData(payload);
+  } catch {
+    return undefined;
+  }
 }
 
 export async function loadFleetStatus(apiKey?: string, baseUrl?: string): Promise<FleetStatus | undefined> {

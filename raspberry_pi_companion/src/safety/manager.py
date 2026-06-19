@@ -131,7 +131,7 @@ class SafetyManager:
         self.connection_manager = connection_manager
         self.telemetry_manager = telemetry_manager
         self.state_file = self._resolve_state_file(Path(config.safety_state_file))
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._zones: List[GeofenceZone] = []
         self._remote_id = RemoteIDState(
             enabled=config.remote_id_enabled,

@@ -37,4 +37,8 @@ GROUND_STATION_DESKTOP_PORT=4173
 ```
 
 The shell keeps the UI stack aligned with the web app so the same shared
-mission, swarm, calibration, and farm workflows stay in one codepath.
+mission, swarm, calibration, farm, and flight-log workflows stay in one codepath.
+
+The desktop shell should render the same shell status card as the web app so
+operators can confirm the runtime mode and Companion endpoint from either
+surface.

@@ -3,7 +3,9 @@ import { FieldMap } from './components/FieldMap';
 import { CalibrationHistoryPanel } from './components/CalibrationHistoryPanel';
 import { FleetPanel } from './components/FleetPanel';
 import { FarmTimelinePanel } from './components/FarmTimelinePanel';
+import { FlightLogTimelinePanel } from './components/FlightLogTimelinePanel';
 import { MissionEditor } from './components/MissionEditor';
+import { ShellStatusPanel } from './components/ShellStatusPanel';
 import { SwarmConfigEditor } from './components/SwarmConfigEditor';
 import { TelemetryCharts } from './components/TelemetryCharts';
 import { mockSnapshot } from './data/mockState';
@@ -14,8 +16,10 @@ import {
   importPrescriptionMap,
   getBaseUrl,
   loadCompanionSnapshot,
+  loadFlightLogSyncHistory,
   loadGeoTiffPreview,
   processPpkJob,
+  replayFlightLogSyncBundle,
   saveBaseStation,
   syncAgLeader,
   uploadGeoTiffPreview,
@@ -42,9 +46,12 @@ import {
   updateDraftWaypoints,
 } from '../../../shared/mission/routes';
 import { buildSurveyPreview, computePolygonCenter } from '../../../shared/mission/planning';
+import { detectShellContext } from './lib/shell';
+import type { RuntimeConfig } from './runtimeConfig';
 import type {
   CompanionSnapshot,
   ConnectionState,
+  FlightLogSyncHistoryEntry,
   LatLngPoint,
   MissionEditorMode,
   MissionWaypoint,
@@ -53,6 +60,7 @@ import type { PpkJobStatus } from '../../../shared/types/base';
 
 type AppProps = {
   companionBaseUrl?: string;
+  runtimeConfig?: RuntimeConfig;
 };
 
 type FleetMarker = DroneFleetEntry & {
@@ -149,7 +157,7 @@ function computeOverlayBounds(points: Array<LatLngPoint>, center: [number, numbe
   ] as [[number, number], [number, number]];
 }
 
-function App({ companionBaseUrl }: AppProps) {
+function App({ companionBaseUrl, runtimeConfig }: AppProps) {
   const routeStorageKey = 'ground-station.route-draft.v1';
   const geotiffInputRef = useRef<HTMLInputElement | null>(null);
   const prescriptionInputRef = useRef<HTMLInputElement | null>(null);
@@ -175,6 +183,9 @@ function App({ companionBaseUrl }: AppProps) {
   const [prescriptionMessage, setPrescriptionMessage] = useState('no prescription loaded');
   const [calibrationMessage, setCalibrationMessage] = useState('no base station configured');
   const [farmMessage, setFarmMessage] = useState('farm integrations idle');
+  const [flightLogMessage, setFlightLogMessage] = useState('flight log history not loaded');
+  const [flightLogBundles, setFlightLogBundles] = useState<FlightLogSyncHistoryEntry[]>([]);
+  const shellContext = useMemo(() => detectShellContext(), []);
   const [baseStationDraft, setBaseStationDraft] = useState({
     station_id: 'base-01',
     name: 'Field base station',
@@ -218,10 +229,15 @@ function App({ companionBaseUrl }: AppProps) {
           prescription: live.prescription ?? mockSnapshot.prescription,
           calibration: live.calibration ?? mockSnapshot.calibration,
           farm: live.farm ?? mockSnapshot.farm,
+          flight_log_sync: live.flight_log_sync ?? mockSnapshot.flight_log_sync,
           swarm_coordination: live.swarm_coordination ?? mockSnapshot.swarm_coordination,
         } as CompanionSnapshot;
 
+        const logBundles = await loadFlightLogSyncHistory(apiKey || undefined, companionBaseUrl);
+
         setStatusSnapshot(merged);
+        setFlightLogBundles(logBundles);
+        setFlightLogMessage(logBundles.length ? `Loaded ${logBundles.length} flight log bundle(s)` : 'No flight log bundles yet');
         setConnectionState(normalizeConnectionState(merged));
         setSourceLabel(apiKey ? 'companion api' : 'local mock + api fallback');
       } catch {
@@ -229,6 +245,8 @@ function App({ companionBaseUrl }: AppProps) {
           setStatusSnapshot(mockSnapshot);
           setConnectionState('unknown');
           setSourceLabel('mock data');
+          setFlightLogBundles([]);
+          setFlightLogMessage('flight log history unavailable');
         }
       } finally {
         if (!cancelled) {
@@ -747,6 +765,39 @@ function App({ companionBaseUrl }: AppProps) {
     }
   }
 
+  async function replayFlightLogBundleWorkflow(bundle?: FlightLogSyncHistoryEntry) {
+    if (!bundle?.archive_path) {
+      setFlightLogMessage('Select a flight log bundle to replay');
+      return;
+    }
+
+    const token = await ensureControlToken('Flight log replay');
+    if (!token) {
+      setFlightLogMessage('Flight log replay requires control authority');
+      return;
+    }
+
+    const replayed = await replayFlightLogSyncBundle(
+      String(bundle.archive_path),
+      apiKey || undefined,
+      token,
+      companionBaseUrl,
+      false,
+    );
+    setFlightLogMessage(replayed ? `Replayed ${replayed.name ?? replayed.archive_path}` : 'Flight log replay failed');
+  }
+
+  async function refreshFlightLogHistory() {
+    try {
+      const logBundles = await loadFlightLogSyncHistory(apiKey || undefined, companionBaseUrl);
+      setFlightLogBundles(logBundles);
+      setFlightLogMessage(logBundles.length ? `Loaded ${logBundles.length} flight log bundle(s)` : 'No flight log bundles yet');
+    } catch {
+      setFlightLogBundles([]);
+      setFlightLogMessage('flight log history unavailable');
+    }
+  }
+
   function triggerPrescriptionPicker() {
     prescriptionInputRef.current?.click();
   }
@@ -882,6 +933,12 @@ function App({ companionBaseUrl }: AppProps) {
           </button>
           <p className="hint">Connects to `/ws/telemetry` and the REST snapshot endpoints when configured.</p>
         </div>
+
+        <ShellStatusPanel
+          shellContext={shellContext}
+          runtimeConfig={runtimeConfig}
+          companionBaseUrl={companionBaseUrl}
+        />
 
         <div className="sidebar-panel">
           <span className="panel-label">Mission</span>
@@ -1300,16 +1357,24 @@ function App({ companionBaseUrl }: AppProps) {
             onRunPpk={processPpkWorkflow}
           />
 
-          <FarmTimelinePanel
-            farmStatus={farmStatus}
-            message={farmMessage}
-            onExportIsoxml={exportIsoxmlWorkflow}
-            onSyncAgLeader={syncAgLeaderWorkflow}
-            onGenerateReport={generateFarmReportWorkflow}
-          />
+        <FarmTimelinePanel
+          farmStatus={farmStatus}
+          message={farmMessage}
+          onExportIsoxml={exportIsoxmlWorkflow}
+          onSyncAgLeader={syncAgLeaderWorkflow}
+          onGenerateReport={generateFarmReportWorkflow}
+        />
 
-          <SwarmConfigEditor
-            companionBaseUrl={companionBaseUrl}
+        <FlightLogTimelinePanel
+          flightLogSync={statusSnapshot.flight_log_sync}
+          bundles={flightLogBundles}
+          message={flightLogMessage}
+          onReplay={replayFlightLogBundleWorkflow}
+          onRefresh={refreshFlightLogHistory}
+        />
+
+        <SwarmConfigEditor
+          companionBaseUrl={companionBaseUrl}
             apiKey={apiKey || undefined}
             ensureControlToken={ensureControlToken}
             coordination={swarmCoordination}

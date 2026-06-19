@@ -1,5 +1,6 @@
 export type RuntimeConfig = {
   companionBaseUrl?: string;
+  shellLabel?: string;
 };
 
 declare global {
@@ -18,6 +19,7 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
   if (injected) {
     return {
       companionBaseUrl: normalizeUrl(injected.companionBaseUrl),
+      shellLabel: normalizeUrl(injected.shellLabel),
     };
   }
 
@@ -27,6 +29,7 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
       const payload = (await response.json()) as RuntimeConfig;
       return {
         companionBaseUrl: normalizeUrl(payload.companionBaseUrl),
+        shellLabel: normalizeUrl(payload.shellLabel),
       };
     }
   } catch {

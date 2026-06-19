@@ -49,7 +49,11 @@ ground_station/
 - The mobile shell lives in `apps/mobile/` and wraps the same web bundle through Capacitor.
 - Shared mission planning, telemetry parsing, and companion API helpers live under `shared/` so desktop and mobile shells can reuse the same behavior without duplicate logic.
 - Shared UI atoms and reusable panels live under `packages/ui/`; platform shells should compose those instead of re-implementing common status/metric widgets.
+- Runtime companion discovery is shared across shells so web, desktop, and mobile can point at the same Pi without rebuilding.
 - Route save/load/upload should be implemented against the shared mission helpers first, then consumed by web, desktop, and mobile shells from the same code path.
+- Shell parity is a first-class goal: the same runtime status, map, and workflow panels should be reachable from web, desktop, and mobile.
+- Calibration history, farm report timelines, and flight-log replay history should stay visible in the operator dashboard for quick validation.
+- Live workflow regression coverage should exercise calibration, farm, swarm, and GeoTIFF flows against a running Companion instance.
 
 The current UI surfaces:
 
@@ -60,6 +64,8 @@ The current UI surfaces:
 - prescription and variable-rate application state
 - RTK/PPK and calibration workflow status
 - farm integration exports and report generation
+- swarm configuration and coordination status
+- flight-log sync status and replay history
 
 ## Docker
 

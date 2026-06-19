@@ -22,6 +22,7 @@ function runtimeConfigPayload() {
   return JSON.stringify(
     {
       companionBaseUrl: process.env.COMPANION_BASE_URL?.trim() || undefined,
+      shellLabel: 'desktop',
     },
     null,
     2,

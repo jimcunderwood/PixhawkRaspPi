@@ -321,6 +321,14 @@ export const mockSnapshot: CompanionSnapshot = {
       },
     ],
   },
+  flight_log_sync: {
+    status: 'idle',
+    running: false,
+    last_landing_at: Date.now() / 1000 - 420,
+    last_armed_at: Date.now() / 1000 - 1120,
+    base_directory: '/var/lib/drone-companion/flight-logs',
+    updated_at: Date.now() / 1000 - 75,
+  },
   swarm_coordination: {
     swarm_id: 'field-alpha-swarm',
     self_drone_id: 'drone-01',

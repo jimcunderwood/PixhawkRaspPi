@@ -10,14 +10,15 @@ For OS-specific install steps and Docker usage, see
 - Responsive cockpit-style dashboard layout
 - Local mock snapshot so the UI renders without a live companion
 - Typed companion API client for health, vehicle, readiness, safety, mission, navigation, and telemetry data
-- Strong visual shell for future mission planning and map interaction
+- Real map, telemetry, mission, calibration history, farm timeline, and swarm configuration panels
 - Shared mission, telemetry, and companion API helpers live in `ground_station/shared/` so desktop and mobile shells can reuse the same logic
 - Shared status and metric widgets live in `ground_station/packages/ui/`
 - Mission drafts can be saved locally, exported as JSON, loaded from the companion, and uploaded back through the shared mission API helpers
 - Fleet markers are driven from the shared fleet model so multiple drones can appear on the same map
 - Weather briefing status and obstacle-scan status panels are wired into the operator dashboard
 - Prescription and variable-rate task state are shown alongside the mission view
-- RTK/PPK and calibration workflow summaries are reserved for the operator dashboard
+- RTK/PPK calibration, farm export/report, flight-log replay, and swarm coordination workflows are wired into the operator dashboard
+- The shell status panel shows the current runtime, companion target, and whether the shell is running in web, desktop, or mobile mode
 
 ## Companion API integration
 
@@ -49,8 +50,9 @@ publishing it.
 
 ## Next expansion points
 
-- Map tiles and field overlays
-- Mission editor and boundary drawing
-- Live telemetry charts and event feed
-- Multi-drone fleet panel
-- Camera and payload controls
+- Offline/reconnect behavior
+- Touch-first map editing polish
+- Browser smoke tests against a live companion
+- Calibration history reruns and farm timeline regressions
+- Desktop and mobile release packaging
+- Camera and payload control refinements

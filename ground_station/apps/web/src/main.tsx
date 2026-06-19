@@ -11,7 +11,7 @@ async function bootstrap() {
 
   ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <React.StrictMode>
-      <App companionBaseUrl={companionBaseUrl} />
+      <App companionBaseUrl={companionBaseUrl} runtimeConfig={runtimeConfig} />
     </React.StrictMode>,
   );
 }

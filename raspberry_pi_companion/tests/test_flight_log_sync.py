@@ -1,0 +1,145 @@
+import json
+import time
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from src.api.server import FlightLogReplayRequest
+from src.logsync.manager import FlightLogSyncManager
+
+
+class DummyConnectionManager:
+    def register_callback(self, *_args, **_kwargs):
+        return None
+
+
+class DummyTelemetryManager:
+    def get_current(self):
+        return {"mode": "GUIDED"}
+
+    def get_history(self):
+        return [{"timestamp": 1_700_000_000.0, "ground_speed": 3.1}]
+
+
+def make_archive(root: Path, session: str, timestamp: str, reason: str = "landing") -> Path:
+    bundle_dir = root / session / timestamp
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "pixhawk").mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "companion").mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "companion" / "telemetry-history.json").write_text(json.dumps([{"timestamp": 1}]))
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "session": session,
+                "reason": reason,
+                "created_at": 1_700_000_000.0,
+                "created_at_iso": "2023-11-14T22:13:20Z",
+                "pixhawk_files": ["pixhawk/pixhawk_00001.bin"],
+                "companion_files": ["companion/telemetry-history.json"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    archive_path = bundle_dir.with_suffix(".zip")
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in bundle_dir.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(bundle_dir.parent))
+    return archive_path
+
+
+def make_manager(tmp_path: Path) -> FlightLogSyncManager:
+    storage_config = SimpleNamespace(
+        flight_log_directory=str(tmp_path / "flight-logs"),
+        flight_log_sync_delay_seconds=0.0,
+        flight_log_download_limit=5,
+        flight_log_backup_count=3,
+        flight_log_cloud_upload_enabled=False,
+        flight_log_cloud_upload_url="",
+        flight_log_cloud_upload_timeout_seconds=5,
+    )
+    return FlightLogSyncManager(DummyConnectionManager(), object(), DummyTelemetryManager(), storage_config)
+
+
+def test_flight_log_sync_history_and_replay(tmp_path):
+    manager = make_manager(tmp_path)
+    archive_a = make_archive(manager.base_directory, "flight_guided", "20240618T160000Z", "landing")
+    time.sleep(0.01)
+    archive_b = make_archive(manager.base_directory, "flight_guided", "20240618T170000Z", "manual")
+
+    history = manager.history(limit=5)
+    assert [entry["archive_path"] for entry in history][:2] == [str(archive_b), str(archive_a)]
+    assert history[0]["pixhawk_file_count"] == 1
+    assert history[0]["companion_file_count"] == 1
+
+    replayed = manager.replay(str(archive_a))
+    assert replayed["archive_path"] == str(archive_a)
+    assert replayed["session"] == "flight_guided"
+    assert replayed["upload"] == {"enabled": False}
+
+
+def test_flight_log_sync_replay_can_upload(tmp_path, monkeypatch):
+    manager = make_manager(tmp_path)
+    archive = make_archive(manager.base_directory, "flight_guided", "20240618T180000Z")
+    calls = {}
+
+    def fake_upload(archive_path, manifest_path):
+        calls["archive_path"] = archive_path
+        calls["manifest_path"] = manifest_path
+        return {"enabled": True, "status": "uploaded"}
+
+    monkeypatch.setattr(manager, "_upload_archive", fake_upload)
+
+    replayed = manager.replay(str(archive), upload=True)
+    assert replayed["upload"]["status"] == "uploaded"
+    assert calls["archive_path"] == archive
+    assert calls["manifest_path"].name == "manifest.json"
+
+
+@pytest.mark.asyncio
+async def test_log_sync_routes_surface_history_and_replay(async_server_api):
+    app = async_server_api.get_app()
+    authority = async_server_api.control_authority.acquire("pytest", operator="qa", force=True)
+    command_token = authority["authority"]["token"]
+    async_server_api.flight_log_sync_manager = SimpleNamespace(
+        status=lambda: {
+            "status": "idle",
+            "running": False,
+            "base_directory": "/var/lib/drone-companion/flight-logs",
+            "updated_at": 1_700_000_100.0,
+        },
+        history=lambda limit=10: [
+            {
+                "archive_path": "/var/lib/drone-companion/flight-logs/flight_guided/20240618T170000Z.zip",
+                "name": "20240618T170000Z.zip",
+                "session": "flight_guided",
+                "reason": "landing",
+                "pixhawk_file_count": 1,
+                "companion_file_count": 1,
+                "updated_at": 1_700_000_200.0,
+            }
+        ],
+        replay=lambda archive_path, upload=False: {
+            "archive_path": archive_path,
+            "name": Path(archive_path).name,
+            "session": "flight_guided",
+            "reason": "landing",
+            "upload": {"enabled": bool(upload)},
+            "replayed_at": 1_700_000_300.0,
+        },
+    )
+
+    status = await next(route.endpoint for route in app.routes if getattr(route, "path", None) == "/api/log-sync/status")()
+    history = await next(route.endpoint for route in app.routes if getattr(route, "path", None) == "/api/log-sync/history")()
+    replay = await next(route.endpoint for route in app.routes if getattr(route, "path", None) == "/api/log-sync/replay")(
+        FlightLogReplayRequest(archive_path="/var/lib/drone-companion/flight-logs/flight_guided/20240618T170000Z.zip"),
+        x_control_token=command_token,
+    )
+
+    assert status.data["base_directory"].endswith("flight-logs")
+    assert history.data["bundles"][0]["session"] == "flight_guided"
+    assert replay.data["upload"]["enabled"] is False

@@ -94,6 +94,50 @@ class FlightLogSyncManager:
             "base_directory": str(self.base_directory),
         }
 
+    def history(self, limit: int = 10) -> List[Dict]:
+        if limit <= 0:
+            return []
+
+        records: List[Dict] = []
+        for session_directory in sorted(
+            (path for path in self.base_directory.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        ):
+            for archive_path in sorted(
+                (candidate for candidate in session_directory.rglob("*.zip") if candidate.is_file()),
+                key=lambda candidate: candidate.stat().st_mtime,
+                reverse=True,
+            ):
+                record = self._describe_archive(archive_path)
+                if record:
+                    records.append(record)
+                if len(records) >= limit:
+                    return records
+        return records
+
+    def replay(self, archive_path: str, upload: bool = False) -> Dict:
+        candidate = Path(archive_path)
+        if not candidate.is_absolute():
+            candidate = self.base_directory / candidate
+
+        if not candidate.exists() or candidate.suffix.lower() != ".zip":
+            raise FileNotFoundError(f"Flight log archive not found: {archive_path}")
+
+        manifest = self._describe_archive(candidate)
+        if manifest is None:
+            raise ValueError(f"Flight log archive is missing a manifest: {candidate}")
+
+        upload_result = {"enabled": False}
+        if upload:
+            upload_result = self._upload_archive(candidate, candidate.with_name("manifest.json"))
+
+        return {
+            **manifest,
+            "replayed_at": time.time(),
+            "upload": upload_result,
+        }
+
     def sync_now(self, reason: str = "manual") -> Dict:
         session_name = self._session_name()
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -296,6 +340,31 @@ class FlightLogSyncManager:
                 "http_status": getattr(response, "status", 200),
                 "response": response_body[:1024],
             }
+
+    def _describe_archive(self, archive_path: Path) -> Optional[Dict]:
+        try:
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                manifest_name = next((name for name in archive.namelist() if name.endswith("manifest.json")), None)
+                if not manifest_name:
+                    return None
+                manifest = json.loads(archive.read(manifest_name).decode("utf-8"))
+        except Exception as e:
+            logger.warning("Failed to inspect flight log archive %s: %s", archive_path, str(e))
+            return None
+
+        stat = archive_path.stat()
+        return {
+            "archive_path": str(archive_path),
+            "name": archive_path.name,
+            "session": manifest.get("session"),
+            "reason": manifest.get("reason"),
+            "created_at": manifest.get("created_at"),
+            "created_at_iso": manifest.get("created_at_iso"),
+            "pixhawk_file_count": len(manifest.get("pixhawk_files") or []),
+            "companion_file_count": len(manifest.get("companion_files") or []),
+            "size_bytes": stat.st_size,
+            "updated_at": stat.st_mtime,
+        }
 
     def _prune_session_archives(self, session_directory: Path):
         if self.storage_config.flight_log_backup_count <= 0 or not session_directory.is_dir():

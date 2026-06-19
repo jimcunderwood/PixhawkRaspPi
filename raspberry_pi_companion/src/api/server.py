@@ -49,6 +49,7 @@ from ..mapping.planner import (
 from ..mapping.geotiff_store import GeoTiffAssetConfig, GeoTiffAssetStore
 from ..calibration.workflow import CalibrationWorkflowConfig, CalibrationWorkflowManager
 from ..farm.manager import FarmIntegrationConfig, FarmIntegrationManager
+from ..logsync.manager import FlightLogSyncManager
 from ..safety.manager import GeofenceZone, SafetyManager
 from ..vision.detector import EdgeObstacleDetector
 from ..swarm.database import SwarmDatabase, SwarmDatabaseConfig
@@ -750,6 +751,11 @@ class PpkProcessRequest(BaseModel):
     telemetry_history: Optional[List[Dict]] = None
 
 
+class FlightLogReplayRequest(BaseModel):
+    archive_path: str = Field(..., min_length=1, max_length=500)
+    upload: bool = False
+
+
 class FarmExportRequest(BaseModel):
     session: Optional[str] = Field(None, min_length=1, max_length=80)
     report_format: str = Field(default="json", pattern="^(json|isoxml|agleader)$")
@@ -855,6 +861,7 @@ class ServerAPI:
         mission_planner,
         payload_controller,
         telemetry_manager,
+        flight_log_sync_manager: Optional[FlightLogSyncManager] = None,
         swarm_manager: Optional[SwarmManager] = None,
         calibration_manager: Optional[CalibrationWorkflowManager] = None,
         farm_manager: Optional[FarmIntegrationManager] = None,
@@ -866,6 +873,7 @@ class ServerAPI:
         self.mission_planner = mission_planner
         self.payload_controller = payload_controller
         self.telemetry_manager = telemetry_manager
+        self.flight_log_sync_manager = flight_log_sync_manager
         self.swarm_manager = swarm_manager
         if self.swarm_manager is None:
             self.swarm_manager = SwarmManager(
@@ -1317,6 +1325,16 @@ class ServerAPI:
         if not self.farm_manager:
             raise HTTPException(status_code=503, detail="Farm management integration is unavailable.")
         return self.farm_manager.get_status()
+
+    def _flight_log_sync_status_data(self) -> Dict:
+        if not self.flight_log_sync_manager:
+            raise HTTPException(status_code=503, detail="Flight log sync is unavailable.")
+        return self.flight_log_sync_manager.status()
+
+    def _flight_log_sync_history_data(self, limit: int = 10) -> Dict:
+        if not self.flight_log_sync_manager:
+            raise HTTPException(status_code=503, detail="Flight log sync is unavailable.")
+        return {"bundles": self.flight_log_sync_manager.history(limit=limit)}
 
     def _fleet_status_data(self) -> Dict:
         manager = self._swarm_manager_or_none()
@@ -1839,6 +1857,241 @@ class ServerAPI:
         checks["blocking_reasons"] = self._get_readiness_blockers(checks)
         return ReadinessCheck(ready=not checks["blocking_reasons"], checks=checks).model_dump()
 
+    def _get_system_status_summary(self) -> Dict:
+        pixhawk_connection = self._get_connection_status()
+        pixhawk_connected = bool(self.connection_manager.connected)
+        pixhawk_message = (
+            "Pixhawk is connected."
+            if pixhawk_connected
+            else "Pi is running, but Pixhawk is not connected."
+        )
+        return {
+            "pi": {
+                "status": "running",
+                "message": "Raspberry Pi companion API is running.",
+            },
+            "pixhawk": {
+                "connected": pixhawk_connected,
+                "state": pixhawk_connection.get("state"),
+                "message": pixhawk_message,
+                "connection": pixhawk_connection,
+            },
+        }
+
+    def _build_health_payload(self) -> Dict:
+        system = self._get_system_status_summary()
+        pixhawk_connected = system["pixhawk"]["connected"]
+        payload_data = {
+            "status": "ok" if pixhawk_connected else "degraded",
+            "message": system["pixhawk"]["message"],
+            "connected": pixhawk_connected,
+            "api_ready": pixhawk_connected,
+            "pi": system["pi"],
+            "pixhawk_connection": system["pixhawk"]["connection"],
+            "pixhawk_connection_state": system["pixhawk"]["state"],
+            "system": system,
+        }
+        return {
+            "status": "ok" if pixhawk_connected else "degraded",
+            "message": system["pixhawk"]["message"],
+            "connected": pixhawk_connected,
+            "api_ready": pixhawk_connected,
+            "pi": system["pi"],
+            "pixhawk_connection": system["pixhawk"]["connection"],
+            "pixhawk_connection_state": system["pixhawk"]["state"],
+            "system": system,
+            "auth_enabled": config.api.auth_enabled,
+            "data": payload_data,
+        }
+
+    def _build_system_info_payload(self) -> Dict:
+        return {
+            "application": {
+                "name": self.app.title,
+                "version": self.app.version,
+                "environment": config.environment,
+            },
+            "api": {
+                "auth_enabled": config.api.auth_enabled,
+                "safety_gates_enabled": config.api.safety_gates_enabled,
+                "command_authority_enabled": config.api.command_authority_enabled,
+                "command_authority_lease_seconds": config.api.command_authority_lease_seconds,
+                "idempotency_ttl_seconds": config.api.idempotency_ttl_seconds,
+                "roles": [role.value for role in ApiRole],
+                "telemetry_freshness_enabled": config.api.telemetry_freshness_enabled,
+                "telemetry_stale_seconds": config.api.telemetry_stale_seconds,
+                "payload_stale_seconds": config.api.payload_stale_seconds,
+                "audit_log_file": config.api.audit_log_file,
+                "config_database_file": config.api.config_database_file,
+                "cors_origins": config.api.cors_origins,
+            },
+            "storage": {
+                "geotiff_database_file": config.storage.geotiff_database_file,
+                "geotiff_asset_directory": config.storage.geotiff_asset_directory,
+                "swarm_database_file": config.storage.swarm_database_file,
+            },
+            "weather": {
+                "enabled": config.weather.enabled,
+                "station_id": config.weather.station_id,
+                "metar_url_template": config.weather.metar_url_template,
+                "taf_url_template": config.weather.taf_url_template,
+                "timeout_seconds": config.weather.timeout_seconds,
+                "max_metar_age_minutes": config.weather.max_metar_age_minutes,
+                "min_visibility_sm": config.weather.min_visibility_sm,
+                "min_ceiling_ft": config.weather.min_ceiling_ft,
+                "max_wind_kt": config.weather.max_wind_kt,
+                "max_gust_kt": config.weather.max_gust_kt,
+                "allow_ifr": config.weather.allow_ifr,
+            },
+            "edge_ai": {
+                "enabled": config.edge_ai.enabled,
+                "backend": config.edge_ai.backend,
+                "model_path": config.edge_ai.model_path,
+                "labels_path": config.edge_ai.labels_path,
+                "input_size": config.edge_ai.input_size,
+                "confidence_threshold": config.edge_ai.confidence_threshold,
+                "iou_threshold": config.edge_ai.iou_threshold,
+                "sample_interval_seconds": config.edge_ai.sample_interval_seconds,
+            },
+            "mavlink": {
+                "connection_type": config.mavlink.connection_type.value,
+                "port": config.mavlink.port,
+                "baudrate": config.mavlink.baudrate,
+                "udp_ip": config.mavlink.udp_ip,
+                "udp_port": config.mavlink.udp_port,
+                "udp_direction": config.mavlink.udp_direction,
+                "connection_status": self._get_connection_status(),
+            },
+            "mission": {
+                "max_waypoints": config.mission.max_waypoints,
+                "min_altitude": config.mission.min_altitude,
+                "max_altitude": config.mission.max_altitude,
+                "default_airspeed": config.mission.default_airspeed,
+                "loiter_radius": config.mission.loiter_radius,
+                "storage_file": config.mission.storage_file,
+                "obstacle_avoidance_defaults": {
+                    "enabled": config.mission.obstacle_avoidance_enabled,
+                    "mode": config.mission.obstacle_avoidance_mode,
+                    "margin_meters": config.mission.obstacle_avoidance_margin_meters,
+                    "lookahead_meters": config.mission.obstacle_avoidance_lookahead_meters,
+                    "backup_speed_mps": config.mission.obstacle_avoidance_backup_speed_mps,
+                    "min_altitude_meters": config.mission.obstacle_avoidance_min_altitude_meters,
+                    "proximity_type": config.mission.obstacle_avoidance_proximity_type,
+                    "behavior": config.mission.obstacle_avoidance_behavior,
+                    "bendy_ruler_type": config.mission.obstacle_avoidance_bendy_ruler_type,
+                    "obstacle_database_size": config.mission.obstacle_database_size,
+                    "sensor": {
+                        "source": config.mission.obstacle_avoidance_sensor_source,
+                        "coverage_mode": config.mission.obstacle_avoidance_sensor_coverage_mode,
+                        "mavlink_sensor_id": config.mission.obstacle_avoidance_sensor_mavlink_id,
+                        "gpio_pin": config.mission.obstacle_avoidance_sensor_gpio_pin,
+                        "gpio_active_low": config.mission.obstacle_avoidance_sensor_gpio_active_low,
+                        "ros_enabled": config.mission.obstacle_avoidance_sensor_ros_enabled,
+                        "ros_backend": config.mission.obstacle_avoidance_sensor_ros_backend,
+                        "ros_topic": config.mission.obstacle_avoidance_sensor_ros_topic,
+                        "ros_frame_id": config.mission.obstacle_avoidance_sensor_ros_frame_id,
+                        "ros_message_type": config.mission.obstacle_avoidance_sensor_ros_message_type,
+                    },
+                },
+                "terrain_following_defaults": {
+                    "target_agl_meters": config.mission.terrain_target_agl_meters,
+                    "use_rangefinder_for_waypoints": config.mission.terrain_use_rangefinder_for_waypoints,
+                    "rtl_terrain_enabled": config.mission.terrain_rtl_enabled,
+                    "terrain_spacing_meters": config.mission.terrain_spacing_meters,
+                    "ros_bridge_enabled": config.mission.terrain_ros_bridge_enabled,
+                    "ros_backend": config.mission.terrain_ros_backend,
+                    "ros_topic": config.mission.terrain_ros_topic,
+                    "mavros_topic": config.mission.terrain_mavros_topic,
+                    "ros_frame_id": config.mission.terrain_ros_frame_id,
+                },
+            },
+            "navigation": {
+                "config": self._get_navigation_config(),
+                "pixhawk": self._get_navigation_status(),
+            },
+            "payload": {
+                "camera_enabled": config.payload.camera_enabled,
+                "camera_port": config.payload.camera_port,
+                "camera_trigger_enabled": config.payload.camera_trigger_enabled,
+                "camera_trigger_pin": config.payload.camera_trigger_pin,
+                "camera_trigger_pulse_ms": config.payload.camera_trigger_pulse_ms,
+                "flow_sensor_enabled": config.payload.flow_sensor_enabled,
+                "flow_sensor_pulses_per_liter": config.payload.flow_sensor_pulses_per_liter,
+                "spray_pump_pin": config.payload.spray_pump_pin,
+                "flow_sensor_pin": config.payload.flow_sensor_pin,
+                "pressure_sensor": {
+                    "enabled": config.payload.pressure_sensor_enabled,
+                    "source": config.payload.pressure_sensor_source,
+                    "gpio_pin": config.payload.pressure_sensor_pin,
+                    "adc_channel": config.payload.pressure_sensor_adc_channel,
+                    "min_voltage": config.payload.pressure_sensor_min_voltage,
+                    "max_voltage": config.payload.pressure_sensor_max_voltage,
+                    "min_psi": config.payload.pressure_sensor_min_psi,
+                    "max_psi": config.payload.pressure_sensor_max_psi,
+                },
+                "tank_level_sensor": {
+                    "enabled": config.payload.tank_level_sensor_enabled,
+                    "source": config.payload.tank_level_sensor_source,
+                    "gpio_pin": config.payload.tank_level_sensor_pin,
+                    "adc_channel": config.payload.tank_level_sensor_adc_channel,
+                    "min_voltage": config.payload.tank_level_sensor_min_voltage,
+                    "max_voltage": config.payload.tank_level_sensor_max_voltage,
+                    "capacity_liters": config.payload.tank_capacity_liters,
+                    "minimum_level_percent": config.payload.tank_min_level_percent,
+                },
+                "rtk": {
+                    "enabled": config.payload.rtk_enabled,
+                    "correction_port": config.payload.rtk_correction_port,
+                    "correction_baudrate": config.payload.rtk_correction_baudrate,
+                },
+                "ppk": {
+                    "enabled": config.payload.ppk_enabled,
+                    "log_directory": config.payload.ppk_log_directory,
+                },
+                "spray_application_record_directory": config.payload.spray_application_record_directory,
+                "terrain_following": {
+                    "enabled": config.payload.terrain_following_enabled,
+                    "sensor_source": config.payload.terrain_sensor_source,
+                    "sensor_pin": config.payload.terrain_sensor_pin,
+                    "min_agl_meters": config.payload.terrain_min_agl_meters,
+                    "max_agl_meters": config.payload.terrain_max_agl_meters,
+                },
+                "data_directory": config.payload.data_directory,
+                "photo_directory": config.payload.photo_directory,
+                "spray_session_directory": config.payload.spray_session_directory,
+            },
+            "telemetry": {
+                "update_interval": config.telemetry.update_interval,
+                "history_size": config.telemetry.history_size,
+                "gps_timeout": config.telemetry.gps_timeout,
+            },
+            "mapping": {
+                "survey_front_overlap": config.mapping.survey_front_overlap,
+                "survey_side_overlap": config.mapping.survey_side_overlap,
+                "survey_target_gsd_cm": config.mapping.survey_target_gsd_cm,
+                "survey_default_altitude_m": config.mapping.survey_default_altitude_m,
+                "survey_default_heading_deg": config.mapping.survey_default_heading_deg,
+                "survey_flight_speed_mps": config.mapping.survey_flight_speed_mps,
+                "survey_terrain_aware": config.mapping.survey_terrain_aware,
+                "survey_terrain_clearance_m": config.mapping.survey_terrain_clearance_m,
+                "survey_border_margin_m": config.mapping.survey_border_margin_m,
+                "camera_sensor_width_mm": config.mapping.camera_sensor_width_mm,
+                "camera_sensor_height_mm": config.mapping.camera_sensor_height_mm,
+                "camera_image_width_px": config.mapping.camera_image_width_px,
+                "camera_image_height_px": config.mapping.camera_image_height_px,
+                "camera_focal_length_mm": config.mapping.camera_focal_length_mm,
+                "ndvi_enabled": config.mapping.ndvi_enabled,
+                "ndvi_red_band_index": config.mapping.ndvi_red_band_index,
+                "ndvi_nir_band_index": config.mapping.ndvi_nir_band_index,
+                "orthomosaic_preview_max_columns": config.mapping.orthomosaic_preview_max_columns,
+                "orthomosaic_preview_tile_scale": config.mapping.orthomosaic_preview_tile_scale,
+                "lidar_enabled": config.mapping.lidar_enabled,
+                "lidar_topic": config.mapping.lidar_topic,
+                "lidar_frame_id": config.mapping.lidar_frame_id,
+            },
+            "system": self._get_system_status_summary(),
+        }
+
     def _get_readiness_blockers(self, checks: Dict) -> List[str]:
         blocking_reasons = []
         blocking_reasons.extend(self._get_navigation_blockers(checks, include_armable=True))
@@ -2202,210 +2455,30 @@ class ServerAPI:
 
         @self.app.get("/health", tags=["System"])
         async def health_check():
-            connection_status = self._get_connection_status()
-            return {
-                "status": "ok",
-                "connected": self.connection_manager.connected,
-                "pixhawk_connection": connection_status,
-                "pixhawk_connection_state": connection_status.get("state"),
-                "auth_enabled": config.api.auth_enabled,
-            }
+            return self._build_health_payload()
 
         @self.app.get(
-            "/api/system/info",
+            "/info",
             response_model=StatusResponse,
             tags=["System"],
-            dependencies=protected,
         )
         async def system_info():
             return StatusResponse(
                 status="success",
-                message="System information retrieved",
-                data={
-                    "application": {
-                        "name": self.app.title,
-                        "version": self.app.version,
-                        "environment": config.environment,
-                    },
-                    "api": {
-                        "auth_enabled": config.api.auth_enabled,
-                        "safety_gates_enabled": config.api.safety_gates_enabled,
-                        "command_authority_enabled": config.api.command_authority_enabled,
-                        "command_authority_lease_seconds": config.api.command_authority_lease_seconds,
-                        "idempotency_ttl_seconds": config.api.idempotency_ttl_seconds,
-                        "roles": [role.value for role in ApiRole],
-                        "telemetry_freshness_enabled": config.api.telemetry_freshness_enabled,
-                        "telemetry_stale_seconds": config.api.telemetry_stale_seconds,
-                        "payload_stale_seconds": config.api.payload_stale_seconds,
-                        "audit_log_file": config.api.audit_log_file,
-                        "config_database_file": config.api.config_database_file,
-                        "cors_origins": config.api.cors_origins,
-                    },
-                    "storage": {
-                        "geotiff_database_file": config.storage.geotiff_database_file,
-                        "geotiff_asset_directory": config.storage.geotiff_asset_directory,
-                        "swarm_database_file": config.storage.swarm_database_file,
-                    },
-                    "weather": {
-                        "enabled": config.weather.enabled,
-                        "station_id": config.weather.station_id,
-                        "metar_url_template": config.weather.metar_url_template,
-                        "taf_url_template": config.weather.taf_url_template,
-                        "timeout_seconds": config.weather.timeout_seconds,
-                        "max_metar_age_minutes": config.weather.max_metar_age_minutes,
-                        "min_visibility_sm": config.weather.min_visibility_sm,
-                        "min_ceiling_ft": config.weather.min_ceiling_ft,
-                        "max_wind_kt": config.weather.max_wind_kt,
-                        "max_gust_kt": config.weather.max_gust_kt,
-                        "allow_ifr": config.weather.allow_ifr,
-                    },
-                    "edge_ai": {
-                        "enabled": config.edge_ai.enabled,
-                        "backend": config.edge_ai.backend,
-                        "model_path": config.edge_ai.model_path,
-                        "labels_path": config.edge_ai.labels_path,
-                        "input_size": config.edge_ai.input_size,
-                        "confidence_threshold": config.edge_ai.confidence_threshold,
-                        "iou_threshold": config.edge_ai.iou_threshold,
-                        "sample_interval_seconds": config.edge_ai.sample_interval_seconds,
-                    },
-                    "mavlink": {
-                        "connection_type": config.mavlink.connection_type.value,
-                        "port": config.mavlink.port,
-                        "baudrate": config.mavlink.baudrate,
-                        "udp_ip": config.mavlink.udp_ip,
-                        "udp_port": config.mavlink.udp_port,
-                        "udp_direction": config.mavlink.udp_direction,
-                        "connection_status": self._get_connection_status(),
-                    },
-                    "mission": {
-                        "max_waypoints": config.mission.max_waypoints,
-                        "min_altitude": config.mission.min_altitude,
-                        "max_altitude": config.mission.max_altitude,
-                        "default_airspeed": config.mission.default_airspeed,
-                        "loiter_radius": config.mission.loiter_radius,
-                        "storage_file": config.mission.storage_file,
-                        "obstacle_avoidance_defaults": {
-                            "enabled": config.mission.obstacle_avoidance_enabled,
-                            "mode": config.mission.obstacle_avoidance_mode,
-                            "margin_meters": config.mission.obstacle_avoidance_margin_meters,
-                            "lookahead_meters": config.mission.obstacle_avoidance_lookahead_meters,
-                            "backup_speed_mps": config.mission.obstacle_avoidance_backup_speed_mps,
-                            "min_altitude_meters": config.mission.obstacle_avoidance_min_altitude_meters,
-                            "proximity_type": config.mission.obstacle_avoidance_proximity_type,
-                            "behavior": config.mission.obstacle_avoidance_behavior,
-                            "bendy_ruler_type": config.mission.obstacle_avoidance_bendy_ruler_type,
-                            "obstacle_database_size": config.mission.obstacle_database_size,
-                            "sensor": {
-                                "source": config.mission.obstacle_avoidance_sensor_source,
-                                "coverage_mode": config.mission.obstacle_avoidance_sensor_coverage_mode,
-                                "mavlink_sensor_id": config.mission.obstacle_avoidance_sensor_mavlink_id,
-                                "gpio_pin": config.mission.obstacle_avoidance_sensor_gpio_pin,
-                                "gpio_active_low": config.mission.obstacle_avoidance_sensor_gpio_active_low,
-                                "ros_enabled": config.mission.obstacle_avoidance_sensor_ros_enabled,
-                                "ros_backend": config.mission.obstacle_avoidance_sensor_ros_backend,
-                                "ros_topic": config.mission.obstacle_avoidance_sensor_ros_topic,
-                                "ros_frame_id": config.mission.obstacle_avoidance_sensor_ros_frame_id,
-                                "ros_message_type": config.mission.obstacle_avoidance_sensor_ros_message_type,
-                            },
-                        },
-                        "terrain_following_defaults": {
-                            "target_agl_meters": config.mission.terrain_target_agl_meters,
-                            "use_rangefinder_for_waypoints": config.mission.terrain_use_rangefinder_for_waypoints,
-                            "rtl_terrain_enabled": config.mission.terrain_rtl_enabled,
-                            "terrain_spacing_meters": config.mission.terrain_spacing_meters,
-                            "ros_bridge_enabled": config.mission.terrain_ros_bridge_enabled,
-                            "ros_backend": config.mission.terrain_ros_backend,
-                            "ros_topic": config.mission.terrain_ros_topic,
-                            "mavros_topic": config.mission.terrain_mavros_topic,
-                            "ros_frame_id": config.mission.terrain_ros_frame_id,
-                        },
-                    },
-                    "navigation": {
-                        "config": self._get_navigation_config(),
-                        "pixhawk": self._get_navigation_status(),
-                    },
-                    "payload": {
-                        "camera_enabled": config.payload.camera_enabled,
-                        "camera_port": config.payload.camera_port,
-                        "camera_trigger_enabled": config.payload.camera_trigger_enabled,
-                        "camera_trigger_pin": config.payload.camera_trigger_pin,
-                        "camera_trigger_pulse_ms": config.payload.camera_trigger_pulse_ms,
-                        "flow_sensor_enabled": config.payload.flow_sensor_enabled,
-                        "flow_sensor_pulses_per_liter": config.payload.flow_sensor_pulses_per_liter,
-                        "spray_pump_pin": config.payload.spray_pump_pin,
-                        "flow_sensor_pin": config.payload.flow_sensor_pin,
-                        "pressure_sensor": {
-                            "enabled": config.payload.pressure_sensor_enabled,
-                            "source": config.payload.pressure_sensor_source,
-                            "gpio_pin": config.payload.pressure_sensor_pin,
-                            "adc_channel": config.payload.pressure_sensor_adc_channel,
-                            "min_voltage": config.payload.pressure_sensor_min_voltage,
-                            "max_voltage": config.payload.pressure_sensor_max_voltage,
-                            "min_psi": config.payload.pressure_sensor_min_psi,
-                            "max_psi": config.payload.pressure_sensor_max_psi,
-                        },
-                        "tank_level_sensor": {
-                            "enabled": config.payload.tank_level_sensor_enabled,
-                            "source": config.payload.tank_level_sensor_source,
-                            "gpio_pin": config.payload.tank_level_sensor_pin,
-                            "adc_channel": config.payload.tank_level_sensor_adc_channel,
-                            "min_voltage": config.payload.tank_level_sensor_min_voltage,
-                            "max_voltage": config.payload.tank_level_sensor_max_voltage,
-                            "capacity_liters": config.payload.tank_capacity_liters,
-                            "minimum_level_percent": config.payload.tank_min_level_percent,
-                        },
-                        "rtk": {
-                            "enabled": config.payload.rtk_enabled,
-                            "correction_port": config.payload.rtk_correction_port,
-                            "correction_baudrate": config.payload.rtk_correction_baudrate,
-                        },
-                        "ppk": {
-                            "enabled": config.payload.ppk_enabled,
-                            "log_directory": config.payload.ppk_log_directory,
-                        },
-                        "spray_application_record_directory": config.payload.spray_application_record_directory,
-                        "terrain_following": {
-                            "enabled": config.payload.terrain_following_enabled,
-                            "sensor_source": config.payload.terrain_sensor_source,
-                            "sensor_pin": config.payload.terrain_sensor_pin,
-                            "min_agl_meters": config.payload.terrain_min_agl_meters,
-                            "max_agl_meters": config.payload.terrain_max_agl_meters,
-                        },
-                        "data_directory": config.payload.data_directory,
-                        "photo_directory": config.payload.photo_directory,
-                        "spray_session_directory": config.payload.spray_session_directory,
-                    },
-                    "telemetry": {
-                        "update_interval": config.telemetry.update_interval,
-                        "history_size": config.telemetry.history_size,
-                        "gps_timeout": config.telemetry.gps_timeout,
-                    },
-                    "mapping": {
-                        "survey_front_overlap": config.mapping.survey_front_overlap,
-                        "survey_side_overlap": config.mapping.survey_side_overlap,
-                        "survey_target_gsd_cm": config.mapping.survey_target_gsd_cm,
-                        "survey_default_altitude_m": config.mapping.survey_default_altitude_m,
-                        "survey_default_heading_deg": config.mapping.survey_default_heading_deg,
-                        "survey_flight_speed_mps": config.mapping.survey_flight_speed_mps,
-                        "survey_terrain_aware": config.mapping.survey_terrain_aware,
-                        "survey_terrain_clearance_m": config.mapping.survey_terrain_clearance_m,
-                        "survey_border_margin_m": config.mapping.survey_border_margin_m,
-                        "camera_sensor_width_mm": config.mapping.camera_sensor_width_mm,
-                        "camera_sensor_height_mm": config.mapping.camera_sensor_height_mm,
-                        "camera_image_width_px": config.mapping.camera_image_width_px,
-                        "camera_image_height_px": config.mapping.camera_image_height_px,
-                        "camera_focal_length_mm": config.mapping.camera_focal_length_mm,
-                        "ndvi_enabled": config.mapping.ndvi_enabled,
-                        "ndvi_red_band_index": config.mapping.ndvi_red_band_index,
-                        "ndvi_nir_band_index": config.mapping.ndvi_nir_band_index,
-                        "orthomosaic_preview_max_columns": config.mapping.orthomosaic_preview_max_columns,
-                        "orthomosaic_preview_tile_scale": config.mapping.orthomosaic_preview_tile_scale,
-                        "lidar_enabled": config.mapping.lidar_enabled,
-                        "lidar_topic": config.mapping.lidar_topic,
-                        "lidar_frame_id": config.mapping.lidar_frame_id,
-                    },
-                },
+                message="System information retrieved.",
+                data=self._build_system_info_payload(),
+            )
+
+        @self.app.get(
+            "/v1/info",
+            response_model=StatusResponse,
+            tags=["System"],
+        )
+        async def v1_system_info():
+            return StatusResponse(
+                status="success",
+                message="System information retrieved.",
+                data=self._build_system_info_payload(),
             )
 
         @self.app.get(
@@ -2529,16 +2602,37 @@ class ServerAPI:
                 raise
 
         @self.app.get(
-            "/api/readiness",
+            "/readiness",
             response_model=StatusResponse,
             tags=["System"],
-            dependencies=protected,
         )
         async def readiness_check():
+            readiness_data = self._get_readiness_data()
+            blockers = readiness_data.get("checks", {}).get("blocking_reasons", [])
+            message = "Readiness checks completed."
+            if blockers:
+                message = f"{message} {blockers[0]}"
             return StatusResponse(
                 status="success",
-                message="Readiness checks completed",
-                data=self._get_readiness_data(),
+                message=message,
+                data=readiness_data,
+            )
+
+        @self.app.get(
+            "/v1/readiness",
+            response_model=StatusResponse,
+            tags=["System"],
+        )
+        async def v1_readiness_check():
+            readiness_data = self._get_readiness_data()
+            blockers = readiness_data.get("checks", {}).get("blocking_reasons", [])
+            message = "Readiness checks completed."
+            if blockers:
+                message = f"{message} {blockers[0]}"
+            return StatusResponse(
+                status="success",
+                message=message,
+                data=readiness_data,
             )
 
         @self.app.post(
@@ -4686,6 +4780,56 @@ class ServerAPI:
                 message="Farm integration status retrieved",
                 data=self._farm_status_data(),
             )
+
+        @self.app.get(
+            "/api/log-sync/status",
+            response_model=StatusResponse,
+            tags=["Flight Logs"],
+            dependencies=protected,
+        )
+        async def get_log_sync_status():
+            return StatusResponse(
+                status="success",
+                message="Flight log sync status retrieved",
+                data=self._flight_log_sync_status_data(),
+            )
+
+        @self.app.get(
+            "/api/log-sync/history",
+            response_model=StatusResponse,
+            tags=["Flight Logs"],
+            dependencies=protected,
+        )
+        async def get_log_sync_history(limit: int = Query(10, ge=1, le=50)):
+            return StatusResponse(
+                status="success",
+                message="Flight log sync history retrieved",
+                data=self._flight_log_sync_history_data(limit=limit),
+            )
+
+        @self.app.post(
+            "/api/log-sync/replay",
+            response_model=StatusResponse,
+            tags=["Flight Logs"],
+            dependencies=protected,
+        )
+        async def replay_log_sync(request: FlightLogReplayRequest, x_control_token: Optional[str] = Header(None)):
+            action = "flight_log_sync.replay"
+            parameters = request.model_dump(mode="json")
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                if not self.flight_log_sync_manager:
+                    raise HTTPException(status_code=503, detail="Flight log sync is unavailable.")
+                result = self.flight_log_sync_manager.replay(request.archive_path, upload=request.upload)
+                self._audit_command(action, "success", parameters=parameters, details={"archive_path": request.archive_path})
+                return StatusResponse(
+                    status="success",
+                    message="Flight log archive replayed",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
 
         @self.app.post(
             "/api/farm/integrations/isoxml/export",

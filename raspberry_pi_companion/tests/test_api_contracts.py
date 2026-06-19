@@ -9,13 +9,14 @@ import io
 from pathlib import Path
 
 import pytest
-
 pytest.importorskip("fastapi")
+pytest.importorskip("httpx")
 pytest.importorskip("pydantic")
 
 from fastapi import HTTPException, WebSocketDisconnect
 from fastapi.routing import APIRoute
 from fastapi.responses import Response
+from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 from PIL import Image
 
@@ -25,6 +26,7 @@ from src.api import server as server_module
 from src.api.server import (
     ArmRequest,
     ApiRole,
+    BaseStationWizardRequest,
     CalibrationConfigRequest,
     ConfigProfileApplyRequest,
     ConfigProfileSaveRequest,
@@ -39,8 +41,11 @@ from src.api.server import (
     MappingCameraSpecRequest,
     NavigationConfigRequest,
     OrthomosaicPreviewRequest,
+    FarmExportRequest,
+    PpkProcessRequest,
     PointCloudScanRequest,
     RemoteIDRequest,
+    SwarmConfig,
     SurveyGridPlanRequest,
     NdviPreviewRequest,
     SprayApplicationRecordRequest,
@@ -297,6 +302,9 @@ class FakePayloadController:
     def list_application_records(self):
         return []
 
+    def get_application_record(self, session):
+        return None
+
     def get_calibration_config(self):
         return {
             group: values.copy()
@@ -326,7 +334,32 @@ class FakeTelemetryManager:
     last_update = 9999999999
 
     def get_current(self):
-        return None
+        return {
+            "timestamp": 1_700_000_120.0,
+            "location": {"latitude": 40.101, "longitude": -74.199, "altitude": 51.0},
+            "ground_speed": 3.4,
+            "heading": 91.0,
+            "gps": {"fix_type": 6, "satellite_count": 16},
+        }
+
+    def get_history(self, seconds=None):
+        return [
+            {
+                "timestamp": 1_700_000_000.0,
+                "location": {"latitude": 40.1000, "longitude": -74.2000, "altitude": 50.0},
+                "ground_speed": 3.0,
+            },
+            {
+                "timestamp": 1_700_000_060.0,
+                "location": {"latitude": 40.1005, "longitude": -74.1995, "altitude": 50.5},
+                "ground_speed": 3.5,
+            },
+            {
+                "timestamp": 1_700_000_120.0,
+                "location": {"latitude": 40.1010, "longitude": -74.1990, "altitude": 51.0},
+                "ground_speed": 3.9,
+            },
+        ]
 
 
 @pytest.fixture()
@@ -582,7 +615,7 @@ def test_navigation_config_serialization_exposes_sensor_hooks(server_api, monkey
     async def exercise_routes():
         endpoint = get_route_endpoint(
             server_api.get_app(),
-            "/api/system/info",
+            "/info",
             "GET",
         )
         response = await endpoint()
@@ -770,6 +803,148 @@ def test_mapping_endpoints_expose_planning_and_artifacts(server_api, tmp_path, m
     assert geotag_response.data["tagged_count"] >= 0
 
 
+def test_calibration_farm_swarm_and_geotiff_flows_round_trip(server_api, tmp_path):
+    server_api.payload_controller.camera = FakeMappingCamera(tmp_path)
+
+    async def exercise_routes():
+        api_headers = {"x-api-key": "test-key"}
+        authority_endpoint = get_route_endpoint(server_api.get_app(), "/api/control/authority", "POST")
+        calibration_status_endpoint = get_route_endpoint(server_api.get_app(), "/api/calibration/status", "GET")
+        save_base_station_endpoint = get_route_endpoint(server_api.get_app(), "/api/calibration/rtk/base-stations", "POST")
+        ppk_endpoint = get_route_endpoint(server_api.get_app(), "/api/calibration/ppk/process", "POST")
+        farm_status_endpoint = get_route_endpoint(server_api.get_app(), "/api/farm/status", "GET")
+        isoxml_endpoint = get_route_endpoint(server_api.get_app(), "/api/farm/integrations/isoxml/export", "POST")
+        agleader_endpoint = get_route_endpoint(server_api.get_app(), "/api/farm/integrations/agleader/sync", "POST")
+        report_endpoint = get_route_endpoint(server_api.get_app(), "/api/farm/reports/automated", "POST")
+        swarm_config_endpoint = get_route_endpoint(server_api.get_app(), "/api/swarm/config", "GET")
+        validate_swarm_endpoint = get_route_endpoint(server_api.get_app(), "/api/swarm/config/validate", "POST")
+        update_swarm_endpoint = get_route_endpoint(server_api.get_app(), "/api/swarm/config", "PUT")
+        broadcast_swarm_endpoint = get_route_endpoint(server_api.get_app(), "/api/swarm/broadcast", "POST")
+        swarm_coordination_endpoint = get_route_endpoint(server_api.get_app(), "/api/swarm/coordination", "GET")
+        swarm_history_endpoint = get_route_endpoint(server_api.get_app(), "/api/swarm/telemetry/history", "GET")
+
+        authority_response = await authority_endpoint(ControlAuthorityRequest(client_id="test-suite", operator="qa"))
+        control_token = authority_response.data["authority"]["token"]
+        command_token = control_token
+
+        calibration_response = await calibration_status_endpoint()
+        assert calibration_response.data["base_station_count"] >= 0
+
+        save_base_station_response = await save_base_station_endpoint(
+            BaseStationWizardRequest(
+                station_id="base-01",
+                name="Field base station",
+                latitude=40.1,
+                longitude=-74.2,
+                altitude_m=50.0,
+                antenna_height_m=1.5,
+                correction_port="/dev/ttyUSB0",
+                correction_baudrate=115200,
+                mount_type="tripod",
+                activate=True,
+            ),
+            x_control_token=command_token,
+        )
+        assert save_base_station_response.data["active"] is True
+
+        ppk_response = await ppk_endpoint(
+            PpkProcessRequest(
+                session="spray-001",
+                base_station_id="base-01",
+                telemetry_window_seconds=120,
+                source_label="telemetry-history",
+            ),
+            x_control_token=command_token,
+        )
+        ppk_job = ppk_response.data
+        assert ppk_job["request"]["base_station_id"] == "base-01"
+        assert ppk_job["summary"]["sample_count"] == 3
+
+        calibration_status = (await calibration_status_endpoint()).data
+        assert calibration_status["active_base_station"]["station_id"] == "base-01"
+        assert calibration_status["recent_jobs"][0]["job_id"] == ppk_job["job_id"]
+
+        telemetry_history = server_api.telemetry_manager.get_history(120)
+        assert len(telemetry_history) == 3
+
+        farm_status_before = (await farm_status_endpoint()).data
+        assert farm_status_before["configured"] in {True, False}
+
+        isoxml_response = await isoxml_endpoint(FarmExportRequest(session="spray-001"), x_control_token=command_token)
+        assert isoxml_response.data["archive_path"].endswith(".zip")
+
+        agleader_response = await agleader_endpoint(FarmExportRequest(session="spray-001"), x_control_token=command_token)
+        assert agleader_response.data["payload"]["telemetry_samples"] == 3
+
+        report_response = await report_endpoint(FarmExportRequest(session="spray-001"), x_control_token=command_token)
+        assert report_response.data["summary"]["telemetry_samples"] == 3
+
+        farm_status_after = (await farm_status_endpoint()).data
+        assert farm_status_after["recent_isoxml_exports"]
+        assert farm_status_after["recent_reports"]
+        assert farm_status_after["latest_report"]["name"].startswith("report-")
+
+        swarm_config = (await swarm_config_endpoint()).data
+        swarm_config["enabled"] = True
+        swarm_config["role"] = "leader"
+        swarm_config["fusion"]["mode"] = "relative_pose"
+        swarm_config["fusion"]["reference_node_id"] = "drone-01"
+        swarm_config["peers"] = [
+            {
+                **swarm_config["peers"][0],
+                "callsign": "Companion",
+                "role": "leader",
+            },
+            {
+                "drone_id": "drone-02",
+                "callsign": "Wing",
+                "role": "follower",
+                "transport": {"type": "udp", "endpoint": "udp://127.0.0.1:14550"},
+                "trust": "trusted",
+                "max_age_seconds": 2.0,
+                "requires_rtk": False,
+            },
+        ]
+
+        validate_swarm_response = await validate_swarm_endpoint(SwarmConfig.model_validate(swarm_config))
+        assert validate_swarm_response.data["role"] == "leader"
+
+        update_swarm_response = await update_swarm_endpoint(SwarmConfig.model_validate(swarm_config), x_control_token=command_token)
+        updated_swarm = update_swarm_response.data
+        assert updated_swarm["role"] == "leader"
+        assert len(updated_swarm["peers"]) == 2
+
+        broadcast_swarm_response = await broadcast_swarm_endpoint()
+        assert broadcast_swarm_response.data["fusion"]["peer_count"] >= 0
+
+        swarm_coordination_response = await swarm_coordination_endpoint()
+        assert swarm_coordination_response.data["formation_mode"] == "leader_follower"
+
+        swarm_history_response = await swarm_history_endpoint(seconds=120, limit=2)
+        assert len(swarm_history_response.data["samples"]) >= 0
+
+        image = Image.new("RGB", (64, 32), color=(40, 180, 120))
+        geotiff_bytes = io.BytesIO()
+        image.save(geotiff_bytes, format="TIFF")
+        preview_bytes, preview_meta = server_api._preview_image_from_geotiff(geotiff_bytes.getvalue(), 48)
+        geotiff_asset = server_api.geotiff_assets.save_asset(
+            name="Field North",
+            source_filename="field-north.tif",
+            bounds=GeoTiffBoundsRequest(north=40.2, south=40.1, east=-74.1, west=-74.2).model_dump(),
+            source_bytes=geotiff_bytes.getvalue(),
+            preview_bytes=preview_bytes,
+            preview_meta=preview_meta,
+        )
+        assert geotiff_asset["asset_id"].startswith("geotiff-")
+
+        geotiff_detail = server_api.geotiff_assets.get_asset(geotiff_asset["asset_id"])
+        assert geotiff_detail["source_filename"] == "field-north.tif"
+        assert Path(geotiff_detail["preview_path"]).is_file()
+        assert Path(geotiff_detail["source_path"]).is_file()
+
+    asyncio.run(exercise_routes())
+
+
 def test_health_and_readiness_expose_pixhawk_connection_state(server_api, monkeypatch):
     monkeypatch.setattr(
         server_api.connection_manager,
@@ -795,7 +970,7 @@ def test_health_and_readiness_expose_pixhawk_connection_state(server_api, monkey
         )
         readiness_endpoint = get_route_endpoint(
             server_api.get_app(),
-            "/api/readiness",
+            "/readiness",
             "GET",
         )
         health_response = await health_endpoint()
@@ -804,6 +979,8 @@ def test_health_and_readiness_expose_pixhawk_connection_state(server_api, monkey
 
     health_response, readiness_response = asyncio.run(exercise_routes())
 
+    assert health_response["status"] == "degraded"
+    assert health_response["message"] == "Pi is running, but Pixhawk is not connected."
     assert health_response["pixhawk_connection"]["state"] == "reconnecting"
     assert health_response["pixhawk_connection_state"] == "reconnecting"
     assert readiness_response.data["checks"]["pixhawk_connection"]["state"] == "reconnecting"
@@ -1174,8 +1351,10 @@ def test_config_profiles_store_retrieve_and_reapply_runtime_values(server_api):
 def test_client_bootstrap_and_mission_edit_routes_are_documented(server_api):
     paths = server_api.get_app().openapi()["paths"]
 
-    assert "/api/system/info" in paths
-    assert "/api/v1/system/info" in paths
+    assert "/info" in paths
+    assert "/v1/info" in paths
+    assert "/readiness" in paths
+    assert "/v1/readiness" in paths
     assert "/api/system/audit" in paths
     assert "/api/v1/system/audit" in paths
     assert "/api/config/calibration" in paths
@@ -1231,8 +1410,10 @@ def test_openapi_operation_ids_are_clean_and_v1_aliases_preserve_methods(server_
     ]
 
     assert len(operation_ids) == len(set(operation_ids))
-    assert paths["/api/system/info"]["get"]["operationId"] == "getSystemInfo"
-    assert paths["/api/v1/system/info"]["get"]["operationId"] == "v1GetSystemInfo"
+    assert paths["/info"]["get"]["operationId"] == "getInfo"
+    assert paths["/v1/info"]["get"]["operationId"] == "v1GetInfo"
+    assert paths["/readiness"]["get"]["operationId"] == "getReadiness"
+    assert paths["/v1/readiness"]["get"]["operationId"] == "v1GetReadiness"
     assert (
         paths["/api/payload/camera/sessions/{session}/photos/{filename}"]["get"][
             "operationId"
