@@ -180,6 +180,10 @@ sudo ufw allow 8000/tcp
 sudo ufw allow 8000/udp
 ```
 
+The ground station reads the companion URL at runtime, so once the companion
+is reachable on the network you only need to update `COMPANION_BASE_URL` on
+the operator machine or in the web UI Docker env file.
+
 ## Running as Service
 
 ### 1. Install and Enable Systemd Service
@@ -257,6 +261,9 @@ curl -X POST http://localhost:8000/api/v1/mission/add-waypoint \
     }
   }'
 ```
+
+For the ground station install flow on Linux, macOS, Windows, and Docker, see
+[ground_station/docs/INSTALLATION.md](../../ground_station/docs/INSTALLATION.md).
 
 ### 5. Update Calibration Values
 

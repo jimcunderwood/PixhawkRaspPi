@@ -2,154 +2,80 @@
 
 Date: 2026-06-18
 
-This file captures the highest-value issues and missing features I see after reviewing the companion project, with emphasis on what would make the Raspberry Pi companion and its surrounding ecosystem more complete, reliable, and usable in the field.
+This document tracks the remaining implementation roadmap for the companion and ground station. The core pieces are now in place: the web ground station is real, the Leaflet map is live, mission drafting works, and GeoTIFF overlays are backed by SQLite on the companion. The remaining work is about hardening, completion, and validation.
 
-## Issues
+## Current Baseline
 
-### 1. Ground station is still effectively a placeholder
-The companion backend is fairly complete, but the `ground_station/` workspace only contains documentation, type schemas, and planning notes. There is no real UI, mission editor, live map, or fleet dashboard yet.
+- `ground_station/apps/web/` is a working React/Vite control surface with a live field map, telemetry panels, mission editing, and GeoTIFF overlay upload/preview support.
+- `raspberry_pi_companion/` now exposes a SQLite-backed GeoTIFF catalog plus upload, list, fetch, preview, and delete routes.
+- The main gaps are now production hardening, workflow completion, and end-to-end validation.
 
-Why it matters:
-- Operators need a practical control surface for missions, telemetry, payloads, and safety events.
-- The project is missing the main human-facing product layer.
+## Roadmap
 
-### 2. README and status language is more optimistic than the repo state
-Several docs describe the system as complete or production ready, but the repository still has major missing deliverables, especially on the ground-station side and in deployment automation.
+### 1. Finish the ground station as a field-ready app
+The current UI is functional, but it still needs the polish required for real operations.
 
-Why it matters:
-- New contributors may overestimate readiness.
-- It becomes harder to prioritize real gaps when the docs are ahead of the implementation.
+Focus areas:
+- offline and reconnect behavior
+- clearer map editing affordances
+- better fleet selection and status presentation
+- a dedicated payload and camera workflow
+- saved layouts or mission workspace presets
 
-### 3. Validation is still too limited for a flight-adjacent system
-There is good unit coverage around some modules, but the repo still lacks a strong integration story for:
-- SITL-based mission execution
-- end-to-end API workflows
-- hardware-in-the-loop validation
-- long-running stability tests
+### 2. Complete the GeoTIFF lifecycle
+The SQLite-backed catalog is a solid foundation, but it should become a first-class asset workflow.
 
-Why it matters:
-- Drone software needs confidence across failure modes, reconnection, telemetry load, and command sequencing.
+Focus areas:
+- browse and manage stored overlays in the UI
+- associate overlays with missions, fields, or camera sessions
+- support metadata updates and cleanup flows
+- expose provenance and upload history in the catalog
 
-### 4. Deployment and operations are underbuilt
-There is no obvious containerization, release pipeline, metrics endpoint, or standardized rollout workflow for the companion app.
+### 3. Add end-to-end validation for the new workflows
+Now that the map and GeoTIFF paths are real, they need full coverage.
 
-Why it matters:
-- Field systems need reproducible builds, easy updates, and clear rollback paths.
-- Operational issues are harder to diagnose without metrics and health telemetry.
+Focus areas:
+- UI-to-companion upload and preview flow
+- mission draft save/load flow
+- field boundary editing round-trip
+- GeoTIFF upload/list/get/delete contract tests
+- SITL-backed mission execution tests
 
-### 5. Security is functional but not hardened enough
-The API has auth and command authority concepts, but the system still appears to be missing stronger production protections such as:
-- TLS/mTLS guidance
-- rate limiting
-- user/session management beyond shared API keys
-- explicit secret handling guidance
+### 4. Expand persistence for operational history
+The repo now has useful SQLite-backed storage, and the next step is to make more of the operating history queryable.
 
-Why it matters:
-- This system controls aircraft and field operations, so authentication alone is not enough.
+Focus areas:
+- telemetry history queries
+- mission and route snapshots
+- overlay provenance and session association
+- post-flight artifacts and audit summaries
 
-### 6. UX for safety and compliance needs more operator-facing clarity
-The companion tracks safety state, waivers, and Remote ID metadata, but the repo still lacks a dedicated operator workflow for:
-- preflight checklists
-- safety exceptions
-- compliance review
-- post-flight audit summaries
+### 5. Harden deployment and observability
+The system needs the usual operational scaffolding before it can be treated as field-ready.
 
-Why it matters:
-- Field operators need quick, unambiguous confirmation before arming or launching.
+Focus areas:
+- containerized builds
+- CI that runs companion and ground station checks
+- structured logging and metrics
+- health and readiness endpoints for both services
 
-### 7. Documentation is broad, but not yet tied to implementation workflows
-The docs are detailed, but some critical paths are spread across multiple files and can be hard to follow end-to-end.
+### 6. Turn safety and compliance into an explicit operator workflow
+The safety primitives exist; the remaining work is to surface them clearly in the operator experience.
 
-Why it matters:
-- Onboarding and maintenance are slower than they need to be.
-- A first-time operator or contributor may not know the exact path from setup to first flight.
-
-## Features
-
-### 1. Real ground station application
-Build the actual client application in `ground_station/` with:
-- map view for live vehicle tracking
-- waypoint and boundary editing
-- mission upload/download controls
-- payload panel
-- telemetry charts
-- multi-drone/fleet awareness
-
-### 2. Mission planning UI
-Add a visual mission builder that supports:
-- waypoint editing and drag/drop
-- spray route generation
-- survey grid generation
-- loiter/orbit planning
-- altitude profile visualization
-
-### 3. Mapping workflow completion
-The backend already has mapping primitives, but the product would benefit from a full mapping workflow:
-- survey presets by camera and crop type
-- geotag review and export tooling
-- NDVI preview review in the UI
-- orthomosaic preview and export status
-- point-cloud scan plan generation
-
-### 4. Post-flight data workflow
-Add a first-class post-flight experience:
-- automatic flight log bundle creation
-- photo/session review
-- spray application report generation
-- export to GeoJSON/CSV/PDF
-- cloud upload hooks for archives
-
-### 5. Stronger fleet and swarm support
-Extend the current single-vehicle assumptions into a proper fleet model:
-- multiple vehicle profiles
-- per-vehicle health and transport state
-- swarm or leader/follower mission assignments
-- unified map and alerting
-
-### 6. Operational monitoring
-Add production-grade observability:
-- metrics endpoint
-- structured logs
-- alerting for battery, link loss, GPS loss, and sensor failures
-- long-duration stability checks
-
-### 7. Safety workflow improvements
-Build operator workflow around safety states:
-- pre-arm checklist UI
-- explicit arming acknowledgement
-- geofence and no-fly zone editor
-- emergency landing zone visualization
-- compliance and waiver review before mission start
-
-### 8. Deployment packaging
-Add reproducible deployment assets:
-- Dockerfile and compose files
-- systemd hardening guidance
-- release automation
-- OTA/upgrade strategy with rollback
-
-### 9. Testing expansion
-Add test layers that match the mission-critical nature of the software:
-- SITL integration tests
-- API contract tests for all public endpoints
-- hardware abstraction tests for GPIO/camera/sensors
-- load tests for WebSocket telemetry
-
-### 10. Ground station transport abstraction
-Keep the client transport-agnostic so the same UI can talk over:
-- HTTP/WebSocket
-- local IPC
-- MAVLink bridge
-- device-appropriate fallback channels
+Focus areas:
+- pre-arm checklist
+- geofence awareness on the map
+- emergency landing selection
+- explicit compliance review before upload or launch
 
 ## Suggested Priority Order
 
-1. Build the ground station UI foundation.
-2. Add the mission and mapping workflows that the backend already anticipates.
-3. Expand validation with SITL and integration tests.
-4. Harden deployment, observability, and security.
-5. Turn compliance and post-flight reporting into first-class operator workflows.
+1. Complete the GeoTIFF lifecycle in the ground station and companion.
+2. Add end-to-end validation for the map, mission, and GeoTIFF flows.
+3. Harden persistence, observability, and deployment.
+4. Expand the safety and compliance workflow.
+5. Polish multi-vehicle and post-flight flows after the core path is stable.
 
-## Bottom Line
+## Summary
 
-The companion backend is no longer the biggest gap. The biggest missing pieces are the operator experience, deployment discipline, and validation pipeline that make the system safe and usable in the real world.
+The project has crossed the threshold from placeholder scaffolding to a usable core system. The remaining work is to turn that core into a dependable field application with stronger workflows, better history, and more exhaustive validation.

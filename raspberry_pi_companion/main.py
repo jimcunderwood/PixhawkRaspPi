@@ -9,6 +9,8 @@ from typing import Optional
 import uvicorn
 
 from src.config.settings import config
+from src.calibration.workflow import CalibrationWorkflowConfig, CalibrationWorkflowManager
+from src.farm.manager import FarmIntegrationConfig, FarmIntegrationManager
 from src.mavlink.connection_manager import ConnectionManager
 from src.missions.planner import (
     NavigationConfig,
@@ -17,6 +19,8 @@ from src.missions.planner import (
 from src.logsync.manager import FlightLogSyncManager
 from src.payloads.controller import PayloadController
 from src.safety.manager import SafetyManager
+from src.swarm.database import SwarmDatabase, SwarmDatabaseConfig
+from src.swarm.manager import SwarmManager
 from src.telemetry.collector import TelemetryManager
 from src.telemetry.database import TelemetryDatabase, TelemetryDatabaseConfig
 from src.api.server import ServerAPI
@@ -85,6 +89,10 @@ class CompanionComputer:
         self.payload_controller: Optional[PayloadController] = None
         self.telemetry_manager: Optional[TelemetryManager] = None
         self.telemetry_database: Optional[TelemetryDatabase] = None
+        self.swarm_database: Optional[SwarmDatabase] = None
+        self.swarm_manager: Optional[SwarmManager] = None
+        self.calibration_manager: Optional[CalibrationWorkflowManager] = None
+        self.farm_manager: Optional[FarmIntegrationManager] = None
         self.safety_manager: Optional[SafetyManager] = None
         self.flight_log_sync_manager: Optional[FlightLogSyncManager] = None
         self.api_server: Optional[ServerAPI] = None
@@ -114,7 +122,7 @@ class CompanionComputer:
 
             # Initialize payload controller
             logger.info("Initializing payload controller...")
-            self.payload_controller = PayloadController(config.payload)
+            self.payload_controller = PayloadController(config.payload, prescription_config=config.prescription)
 
             # Initialize telemetry manager
             logger.info("Initializing telemetry system...")
@@ -134,6 +142,43 @@ class CompanionComputer:
             self.telemetry_manager.initialize(
                 self.connection_manager.get_vehicle_state,
                 payload_getter=self.payload_controller.get_payload_status if self.payload_controller else None,
+            )
+            if self.payload_controller:
+                self.telemetry_manager.collector.register_callback(
+                    lambda point: self.payload_controller.update_telemetry_snapshot(point.to_dict())
+                )
+
+            self.swarm_database = SwarmDatabase(
+                SwarmDatabaseConfig(
+                    path=Path(config.storage.swarm_database_file),
+                    max_bytes=config.storage.swarm_database_max_bytes,
+                    backup_count=config.storage.swarm_database_backup_count,
+                    vacuum_interval_seconds=config.storage.swarm_database_vacuum_interval_seconds,
+                )
+            )
+            self.swarm_manager = SwarmManager(
+                self.swarm_database,
+                local_state_getter=self.telemetry_manager.get_current,
+            )
+            self.calibration_manager = CalibrationWorkflowManager(
+                CalibrationWorkflowConfig(
+                    database_file=Path(config.calibration_workflow.database_file),
+                ),
+                telemetry_history_getter=self.telemetry_manager.get_history,
+            )
+            self.farm_manager = FarmIntegrationManager(
+                FarmIntegrationConfig(
+                    enabled=config.farm_integration.enabled,
+                    database_file=Path(config.farm_integration.database_file),
+                    isoxml_output_directory=Path(config.farm_integration.isoxml_output_directory),
+                    report_output_directory=Path(config.farm_integration.report_output_directory),
+                    agleader_endpoint=config.farm_integration.agleader_endpoint,
+                    agleader_api_key=config.farm_integration.agleader_api_key,
+                ),
+                payload_controller=self.payload_controller,
+                telemetry_manager=self.telemetry_manager,
+                swarm_manager=self.swarm_manager,
+                calibration_manager=self.calibration_manager,
             )
 
             self.safety_manager = SafetyManager(
@@ -157,6 +202,9 @@ class CompanionComputer:
                 self.mission_planner,
                 self.payload_controller,
                 self.telemetry_manager,
+                swarm_manager=self.swarm_manager,
+                calibration_manager=self.calibration_manager,
+                farm_manager=self.farm_manager,
                 safety_manager=self.safety_manager,
             )
 
@@ -212,6 +260,14 @@ class CompanionComputer:
                 self.telemetry_database.close()
         except Exception as e:
             logger.error(f"Error closing telemetry database: {str(e)}")
+
+        try:
+            if self.swarm_database:
+                self.swarm_database.close()
+            if self.calibration_manager:
+                self.calibration_manager.close()
+        except Exception as e:
+            logger.error(f"Error closing swarm database: {str(e)}")
 
         try:
             if self.payload_controller:

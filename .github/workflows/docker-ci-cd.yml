@@ -1,0 +1,115 @@
+name: Docker CI/CD
+
+on:
+  pull_request:
+    paths:
+      - "ground_station/**"
+      - "raspberry_pi_companion/**"
+      - ".github/workflows/docker-ci-cd.yml"
+      - ".dockerignore"
+  push:
+    branches:
+      - main
+    paths:
+      - "ground_station/**"
+      - "raspberry_pi_companion/**"
+      - ".github/workflows/docker-ci-cd.yml"
+      - ".dockerignore"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  companion:
+    name: Companion Container
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build companion test image
+        run: docker build --target test -f raspberry_pi_companion/Dockerfile -t companion:test .
+
+      - name: Run companion tests
+        run: docker run --rm companion:test
+
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish companion image
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: raspberry_pi_companion/Dockerfile
+          target: runtime
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-companion:latest
+            ghcr.io/${{ github.repository }}-companion:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  ground-station:
+    name: Ground Station Container
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ground station image
+        run: |
+          docker build \
+            --target runtime \
+            -f ground_station/apps/web/Dockerfile \
+            -t ground-station-web:test \
+            .
+
+      - name: Smoke test ground station image
+        run: |
+          docker run -d --rm --name ground-station-web-test -p 8080:80 ground-station-web:test
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/ >/dev/null; then
+              docker rm -f ground-station-web-test >/dev/null 2>&1 || true
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs ground-station-web-test
+          docker rm -f ground-station-web-test >/dev/null 2>&1 || true
+          exit 1
+
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish ground station image
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ground_station/apps/web/Dockerfile
+          target: runtime
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-ground-station-web:latest
+            ghcr.io/${{ github.repository }}-ground-station-web:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

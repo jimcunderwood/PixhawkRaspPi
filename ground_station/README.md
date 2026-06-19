@@ -14,6 +14,12 @@ It is also designed to support:
 - Multiple drones in a single swarm or fleet view
 - Per-drone connection profiles, capabilities, and health state
 - Platform-specific shells that stay thin while shared logic stays reusable
+- Companion runtime discovery so the UI can move between hosts without a rebuild
+
+## Installation
+
+See [docs/INSTALLATION.md](docs/INSTALLATION.md) for Linux, macOS, Windows,
+Docker, Docker Compose, and Capacitor install instructions.
 
 ## Structure
 
@@ -42,6 +48,45 @@ ground_station/
 - Shared mission planning, telemetry parsing, and companion API helpers live under `shared/` so desktop and mobile shells can reuse the same behavior without duplicate logic.
 - Shared UI atoms and reusable panels live under `packages/ui/`; platform shells should compose those instead of re-implementing common status/metric widgets.
 - Route save/load/upload should be implemented against the shared mission helpers first, then consumed by web, desktop, and mobile shells from the same code path.
+
+The current UI surfaces:
+
+- multi-drone fleet state
+- mission and navigation status
+- weather briefing and go/no-go results
+- obstacle scan results from the companion
+- prescription and variable-rate application state
+- RTK/PPK and calibration workflow status
+- farm integration exports and report generation
+
+## Docker
+
+Build the web image from the repository root:
+
+```bash
+docker build -f ground_station/apps/web/Dockerfile -t ground-station-web .
+```
+
+Run the web UI with a runtime `.env` file instead of baking the companion URL
+into the image:
+
+```bash
+cp ground_station/apps/web/.env.example ground_station/apps/web/.env
+docker run --rm -p 8080:80 --env-file ground_station/apps/web/.env ground-station-web
+```
+
+If the companion lives on another host, set `COMPANION_BASE_URL` to that host's
+reachable address, for example `http://192.168.1.50:8000`.
+
+To run the web UI with Docker Compose:
+
+```bash
+docker compose --profile ground-station up -d
+```
+
+The same Compose file can run the companion on a Pi and the web UI on a
+separate workstation. Set `COMPANION_BASE_URL` in the host environment or a
+Compose `.env` file so the ground station reaches the other machine at runtime.
 
 ## Recommended Ground Station Contract
 

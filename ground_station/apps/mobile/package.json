@@ -1,0 +1,22 @@
+{
+  "name": "ground-station-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "sync:web": "npm --prefix ../web run build && npx cap sync",
+    "copy:web": "npm --prefix ../web run build && npx cap copy",
+    "open:ios": "npx cap open ios",
+    "open:android": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/cli": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/device": "^6.0.2",
+    "@capacitor/haptics": "^6.0.2",
+    "@capacitor/ios": "^6.1.2",
+    "@capacitor/status-bar": "^6.0.2"
+  }
+}

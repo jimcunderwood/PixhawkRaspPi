@@ -23,6 +23,8 @@ function toneForStatus(status?: string) {
 }
 
 export function FleetPanel({ drones, activeDroneId, onSelectDrone }: FleetPanelProps) {
+  const activeCount = drones.filter((drone) => drone.active).length;
+
   return (
     <section className="summary-card">
       <div className="panel-head">
@@ -30,7 +32,7 @@ export function FleetPanel({ drones, activeDroneId, onSelectDrone }: FleetPanelP
           <span className="panel-label">Fleet</span>
           <h3>Multi-drone view</h3>
         </div>
-        <span className="pill">{drones.length} drones</span>
+        <span className="pill">{activeCount}/{drones.length} active</span>
       </div>
 
       <div className="list-card">

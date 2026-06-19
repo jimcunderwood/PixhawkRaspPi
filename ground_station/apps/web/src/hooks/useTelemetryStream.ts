@@ -20,6 +20,7 @@ function makeId() {
 
 export function useTelemetryStream(
   apiKey?: string,
+  companionBaseUrl?: string,
   seedSample?: TelemetrySnapshot,
 ): UseTelemetryStreamResult {
   const [state, setState] = useState<TelemetryStreamState>('offline');
@@ -83,7 +84,7 @@ export function useTelemetryStream(
 
       try {
         socket = new WebSocket(
-          buildWebSocketUrl(import.meta.env.VITE_COMPANION_BASE_URL?.trim() || undefined, '/ws/telemetry', apiKey),
+          buildWebSocketUrl(companionBaseUrl, '/ws/telemetry', apiKey),
         );
       } catch {
         scheduleReconnect();
@@ -122,7 +123,7 @@ export function useTelemetryStream(
         // ignore
       }
     };
-  }, [apiKey]);
+  }, [apiKey, companionBaseUrl]);
 
   return {
     state,

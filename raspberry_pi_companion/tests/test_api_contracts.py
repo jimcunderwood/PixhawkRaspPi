@@ -5,8 +5,14 @@ API contract tests for normalized public models and auth metadata.
 import os
 import sys
 import asyncio
+import io
+from pathlib import Path
 
 import pytest
+
+pytest.importorskip("fastapi")
+pytest.importorskip("pydantic")
+
 from fastapi import HTTPException, WebSocketDisconnect
 from fastapi.routing import APIRoute
 from fastapi.responses import Response
@@ -29,6 +35,7 @@ from src.api.server import (
     GeofenceZoneRequest,
     GeotagExportRequest,
     GeotagRecordRequest,
+    GeoTiffBoundsRequest,
     MappingCameraSpecRequest,
     NavigationConfigRequest,
     OrthomosaicPreviewRequest,
@@ -334,6 +341,16 @@ def server_api(monkeypatch, tmp_path):
         "config_database_file",
         str(tmp_path / "config" / "profiles.sqlite3"),
     )
+    monkeypatch.setattr(
+        server_module.config.storage,
+        "geotiff_database_file",
+        str(tmp_path / "geotiff" / "geotiff.sqlite3"),
+    )
+    monkeypatch.setattr(
+        server_module.config.storage,
+        "geotiff_asset_directory",
+        str(tmp_path / "geotiff" / "assets"),
+    )
     monkeypatch.setattr(server_module.config.api, "safety_gates_enabled", True)
     return ServerAPI(
         FakeConnectionManager(),
@@ -480,6 +497,33 @@ def test_mapping_request_models():
     assert WaiverRequest.model_validate(
         {"night_flight_authorized": True, "notes": "Night waiver"}
     ).night_flight_authorized is True
+
+
+def test_geotiff_preview_support_generates_metadata_and_preview(server_api):
+    image = Image.new("RGB", (64, 32), color=(40, 180, 120))
+    geotiff_bytes = io.BytesIO()
+    image.save(geotiff_bytes, format="TIFF")
+
+    preview_bytes, preview_meta = server_api._preview_image_from_geotiff(geotiff_bytes.getvalue(), 48)
+    metadata = server_api.geotiff_assets.save_asset(
+        name="Field North",
+        source_filename="field-north.tif",
+        bounds=GeoTiffBoundsRequest(north=40.2, south=40.1, east=-74.1, west=-74.2).model_dump(),
+        source_bytes=geotiff_bytes.getvalue(),
+        preview_bytes=preview_bytes,
+        preview_meta=preview_meta,
+    )
+
+    assert metadata["asset_id"].startswith("geotiff-")
+    assert metadata["bounds"]["north"] == 40.2
+    assert Path(metadata["preview_path"]).is_file()
+    assert Path(metadata["source_path"]).is_file()
+    assert metadata["preview_width_px"] > 0
+    assert metadata["preview_height_px"] > 0
+
+    assert preview_bytes[:4] == b"\x89PNG"
+    assert preview_meta["source_width_px"] == 64
+    assert preview_meta["source_height_px"] == 32
 
 
 def test_safety_and_compliance_routes_expose_state(server_api):
@@ -1148,6 +1192,17 @@ def test_client_bootstrap_and_mission_edit_routes_are_documented(server_api):
     assert "/api/v1/navigation/config" in paths
     assert "/api/navigation/apply" in paths
     assert "/api/v1/navigation/apply" in paths
+    assert "/api/mapping/geotiff" in paths
+    assert "/api/v1/mapping/geotiff" in paths
+    assert "/api/mapping/geotiff/upload" in paths
+    assert "/api/v1/mapping/geotiff/upload" in paths
+    assert "/api/mapping/geotiff/{asset_id}" in paths
+    assert "/api/v1/mapping/geotiff/{asset_id}" in paths
+    assert "/api/mapping/geotiff/{asset_id}/preview" in paths
+    assert "/api/v1/mapping/geotiff/{asset_id}/preview" in paths
+    assert paths["/api/mapping/geotiff/{asset_id}"]["delete"]["security"] == [
+        {"APIKeyHeader": []}
+    ]
     assert paths["/api/navigation/config"]["post"]["security"] == [
         {"APIKeyHeader": []}
     ]

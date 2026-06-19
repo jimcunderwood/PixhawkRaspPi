@@ -11,9 +11,12 @@ from .planner import (
     SurveyWaypoint,
     VegetationCaptureProfile,
 )
+from .geotiff_store import GeoTiffAssetConfig, GeoTiffAssetStore
 
 __all__ = [
     "CameraSpec",
+    "GeoTiffAssetConfig",
+    "GeoTiffAssetStore",
     "GeotagRecord",
     "MappingPlanner",
     "PointCloudScanConfig",

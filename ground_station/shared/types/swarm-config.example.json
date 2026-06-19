@@ -1,0 +1,71 @@
+{
+  "swarm_id": "field-alpha-swarm",
+  "enabled": true,
+  "self_drone_id": "drone-01",
+  "role": "leader",
+  "transport": {
+    "type": "websocket",
+    "endpoint": "ws://192.168.1.50:9001",
+    "channel": "telemetry"
+  },
+  "peers": [
+    {
+      "drone_id": "drone-01",
+      "callsign": "Alpha",
+      "role": "leader",
+      "transport": {
+        "type": "websocket",
+        "endpoint": "ws://192.168.1.50:9001"
+      },
+      "trust": "primary",
+      "max_age_seconds": 1.5,
+      "requires_rtk": true
+    },
+    {
+      "drone_id": "drone-02",
+      "callsign": "Bravo",
+      "role": "follower",
+      "transport": {
+        "type": "udp",
+        "endpoint": "udp://192.168.1.51:14550"
+      },
+      "trust": "trusted",
+      "max_age_seconds": 2.5,
+      "max_horizontal_error_m": 6,
+      "max_vertical_error_m": 4,
+      "requires_rtk": false
+    }
+  ],
+  "broadcast": {
+    "enabled": true,
+    "rate_hz": 2,
+    "include_location": true,
+    "include_velocity": true,
+    "include_quality": true,
+    "include_vehicle_state": true,
+    "include_alerts": true
+  },
+  "fusion": {
+    "mode": "weighted_gnss",
+    "min_peer_count": 1,
+    "max_peer_age_seconds": 2,
+    "require_reference_node": true,
+    "reference_node_id": "drone-01",
+    "use_peer_velocity": true,
+    "weights": {
+      "self_position": 0.7,
+      "peer_position": 0.2,
+      "peer_velocity": 0.05,
+      "heading": 0.03,
+      "quality": 0.02
+    }
+  },
+  "safety": {
+    "min_horizontal_separation_m": 8,
+    "min_vertical_separation_m": 3,
+    "warn_distance_m": 15,
+    "critical_distance_m": 8,
+    "hold_on_loss": true,
+    "hold_timeout_seconds": 3
+  }
+}

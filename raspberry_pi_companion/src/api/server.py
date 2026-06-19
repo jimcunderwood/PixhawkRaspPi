@@ -5,6 +5,7 @@ Main API interface for ground station communication
 
 import asyncio
 import csv
+import json
 import hashlib
 import hmac
 import io
@@ -24,7 +25,8 @@ from typing import Callable, Dict, List, Optional, Set
 
 import cv2
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Security, WebSocket, WebSocketDisconnect
+from PIL import Image
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Security, WebSocket, WebSocketDisconnect
 from fastapi.routing import APIRoute
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -44,7 +46,21 @@ from ..mapping.planner import (
     SurveyGridConfig,
     VegetationCaptureProfile,
 )
+from ..mapping.geotiff_store import GeoTiffAssetConfig, GeoTiffAssetStore
+from ..calibration.workflow import CalibrationWorkflowConfig, CalibrationWorkflowManager
+from ..farm.manager import FarmIntegrationConfig, FarmIntegrationManager
 from ..safety.manager import GeofenceZone, SafetyManager
+from ..vision.detector import EdgeObstacleDetector
+from ..swarm.database import SwarmDatabase, SwarmDatabaseConfig
+from ..swarm.manager import SwarmManager
+from ..swarm.models import (
+    SwarmConfig,
+    SwarmFusionState,
+    SwarmSeparationAlert,
+    SwarmStatus,
+    SwarmTelemetryMessage,
+)
+from ..weather.service import WeatherService
 
 logger = logging.getLogger(__name__)
 
@@ -541,6 +557,17 @@ class PayloadControlRequest(BaseModel):
         return session
 
 
+class PrescriptionImportRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    payload_text: str = Field(..., min_length=1)
+    source_format: Optional[str] = Field(None, min_length=1, max_length=20)
+    activate: bool = True
+
+
+class PrescriptionActivateRequest(BaseModel):
+    map_id: str = Field(..., min_length=1, max_length=120)
+
+
 class FieldVertex(BaseModel):
     latitude: float = Field(..., ge=-90.0, le=90.0)
     longitude: float = Field(..., ge=-180.0, le=180.0)
@@ -617,6 +644,21 @@ class OrthomosaicPreviewRequest(BaseModel):
     columns: int = Field(default=config.mapping.orthomosaic_preview_max_columns, ge=1, le=24)
 
 
+class GeoTiffBoundsRequest(BaseModel):
+    north: float = Field(..., ge=-90.0, le=90.0)
+    south: float = Field(..., ge=-90.0, le=90.0)
+    east: float = Field(..., ge=-180.0, le=180.0)
+    west: float = Field(..., ge=-180.0, le=180.0)
+
+    @model_validator(mode="after")
+    def validate_bounds(self):
+        if self.north <= self.south:
+            raise ValueError("north must be greater than south")
+        if self.east <= self.west:
+            raise ValueError("east must be greater than west")
+        return self
+
+
 class PointCloudScanRequest(BaseModel):
     field_boundary: FieldBoundaryRequest
     scan_config: Optional[Dict] = None
@@ -632,6 +674,16 @@ class SprayApplicationRecordRequest(BaseModel):
     target_rate_unit: Optional[str] = Field(None, max_length=40)
     weather: Optional[Dict] = None
     notes: Optional[str] = Field(None, max_length=1000)
+
+
+class WeatherBriefingRequest(BaseModel):
+    station_id: Optional[str] = Field(None, min_length=4, max_length=8, pattern=r"^[A-Za-z0-9]{4,8}$")
+    metar_raw: Optional[str] = Field(None, max_length=5000)
+    taf_raw: Optional[str] = Field(None, max_length=10000)
+
+
+class EdgeAiScanRequest(BaseModel):
+    sample_latest_frame: bool = True
 
 
 class SprayComplianceReportRequest(BaseModel):
@@ -672,6 +724,35 @@ class ControlAuthorityRequest(BaseModel):
     operator: Optional[str] = Field(None, max_length=120)
     force: bool = False
     lease_seconds: Optional[int] = Field(None, ge=5, le=300)
+
+
+class BaseStationWizardRequest(BaseModel):
+    station_id: Optional[str] = Field(None, min_length=1, max_length=80)
+    name: str = Field(..., min_length=1, max_length=120)
+    latitude: Optional[float] = Field(None, ge=-90.0, le=90.0)
+    longitude: Optional[float] = Field(None, ge=-180.0, le=180.0)
+    altitude_m: Optional[float] = None
+    antenna_height_m: Optional[float] = Field(None, ge=0.0)
+    correction_port: Optional[str] = None
+    correction_baudrate: Optional[int] = Field(None, ge=9600)
+    mount_type: Optional[str] = Field(None, max_length=80)
+    notes: Optional[str] = Field(None, max_length=1000)
+    activate: bool = True
+
+
+class PpkProcessRequest(BaseModel):
+    job_id: Optional[str] = Field(None, min_length=1, max_length=80)
+    session: Optional[str] = Field(None, min_length=1, max_length=80)
+    base_station_id: Optional[str] = Field(None, min_length=1, max_length=80)
+    telemetry_window_seconds: Optional[int] = Field(default=600, ge=1, le=86400)
+    source_label: Optional[str] = Field(None, min_length=1, max_length=120)
+    notes: Optional[str] = Field(None, max_length=1000)
+    telemetry_history: Optional[List[Dict]] = None
+
+
+class FarmExportRequest(BaseModel):
+    session: Optional[str] = Field(None, min_length=1, max_length=80)
+    report_format: str = Field(default="json", pattern="^(json|isoxml|agleader)$")
 
 
 class ControlAuthority:
@@ -774,17 +855,64 @@ class ServerAPI:
         mission_planner,
         payload_controller,
         telemetry_manager,
+        swarm_manager: Optional[SwarmManager] = None,
+        calibration_manager: Optional[CalibrationWorkflowManager] = None,
+        farm_manager: Optional[FarmIntegrationManager] = None,
         safety_manager: Optional[SafetyManager] = None,
+        weather_service: Optional[WeatherService] = None,
+        edge_ai_detector: Optional[EdgeObstacleDetector] = None,
     ):
         self.connection_manager = connection_manager
         self.mission_planner = mission_planner
         self.payload_controller = payload_controller
         self.telemetry_manager = telemetry_manager
+        self.swarm_manager = swarm_manager
+        if self.swarm_manager is None:
+            self.swarm_manager = SwarmManager(
+                SwarmDatabase(
+                    SwarmDatabaseConfig(
+                        path=Path(tempfile.mkdtemp(prefix="swarm-")) / "swarm.sqlite3",
+                    )
+                ),
+                local_state_getter=self.telemetry_manager.get_current,
+            )
+        self.calibration_manager = calibration_manager or CalibrationWorkflowManager(
+            CalibrationWorkflowConfig(
+                database_file=Path(tempfile.mkdtemp(prefix="calibration-")) / "workflow.sqlite3",
+            ),
+            telemetry_history_getter=self.telemetry_manager.get_history,
+        )
+        self.farm_manager = farm_manager or FarmIntegrationManager(
+            FarmIntegrationConfig(
+                enabled=False,
+                database_file=Path(tempfile.mkdtemp(prefix="farm-")) / "integration.sqlite3",
+                isoxml_output_directory=Path(tempfile.mkdtemp(prefix="isoxml-")),
+                report_output_directory=Path(tempfile.mkdtemp(prefix="reports-")),
+            ),
+            payload_controller=self.payload_controller,
+            telemetry_manager=self.telemetry_manager,
+            swarm_manager=self.swarm_manager,
+            calibration_manager=self.calibration_manager,
+        )
         self.safety_manager = safety_manager or SafetyManager(
             config.safety,
             connection_manager=self.connection_manager,
             telemetry_manager=self.telemetry_manager,
         )
+        self.weather_service = weather_service or WeatherService(config.weather)
+        self.edge_ai_detector = edge_ai_detector or (
+            EdgeObstacleDetector(
+                config.edge_ai,
+                frame_getter=self._get_latest_camera_frame,
+            )
+            if getattr(self.payload_controller, "camera", None)
+            else None
+        )
+        if self.edge_ai_detector and config.edge_ai.enabled:
+            try:
+                self.edge_ai_detector.initialize()
+            except Exception as exc:
+                logger.warning("Failed to initialize edge AI detector: %s", exc)
         self.active_websocket_clients: Set[WebSocket] = set()
         self.active_event_websocket_clients: Set[WebSocket] = set()
         self.command_event_subscribers: Dict[str, Callable[[Dict], object]] = {}
@@ -797,6 +925,12 @@ class ServerAPI:
             backup_count=config.api.audit_log_backup_count,
         )
         self.config_profiles = ConfigProfileStore(config.api.config_database_file)
+        self.geotiff_assets = GeoTiffAssetStore(
+            GeoTiffAssetConfig(
+                database_file=Path(config.storage.geotiff_database_file),
+                asset_directory=Path(config.storage.geotiff_asset_directory),
+            )
+        )
         self.control_authority = ControlAuthority(config.api.command_authority_lease_seconds)
 
         self.app = FastAPI(
@@ -817,6 +951,11 @@ class ServerAPI:
         if getattr(self.telemetry_manager, "collector", None):
             try:
                 self.telemetry_manager.collector.register_callback(self.safety_manager.register_telemetry_point)
+                self.telemetry_manager.collector.register_callback(
+                    lambda point: self.swarm_manager.ingest_local_snapshot(point.to_dict())
+                    if self.swarm_manager
+                    else None
+                )
             except Exception:
                 pass
 
@@ -1108,6 +1247,206 @@ class ServerAPI:
             "distance_sensors": status.get("distance_sensors", []),
         }
 
+    def _current_swarm_snapshot(self) -> Dict:
+        snapshot = self.telemetry_manager.get_current() or {}
+        if not snapshot and hasattr(self.connection_manager, "get_vehicle_state"):
+            snapshot = self.connection_manager.get_vehicle_state() or {}
+        return snapshot
+
+    def _get_latest_camera_frame(self):
+        camera = getattr(self.payload_controller, "camera", None)
+        if not camera:
+            return None
+        if hasattr(camera, "get_latest_frame"):
+            return camera.get_latest_frame()
+        if hasattr(camera, "_get_latest_frame"):
+            return camera._get_latest_frame()
+        return None
+
+    def _swarm_manager_or_none(self) -> Optional[SwarmManager]:
+        return getattr(self, "swarm_manager", None)
+
+    def _swarm_config_data(self) -> Dict:
+        manager = self._swarm_manager_or_none()
+        if not manager:
+            raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+        return manager.get_config()
+
+    def _swarm_status_data(self) -> Dict:
+        manager = self._swarm_manager_or_none()
+        if not manager:
+            raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+        return manager.get_status()
+
+    def _swarm_fusion_state_data(self) -> Dict:
+        manager = self._swarm_manager_or_none()
+        if not manager:
+            raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+        state = manager.get_fusion_state()
+        if state is None:
+            return manager.recompute_fusion()
+        return state
+
+    def _swarm_telemetry_data(self, seconds: Optional[int] = None, limit: Optional[int] = None) -> Dict:
+        manager = self._swarm_manager_or_none()
+        if not manager:
+            raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+        return {"samples": manager.get_telemetry(seconds=seconds, limit=limit)}
+
+    def _swarm_alert_data(self, seconds: Optional[int] = None, limit: Optional[int] = None) -> Dict:
+        manager = self._swarm_manager_or_none()
+        if not manager:
+            raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+        return {"alerts": manager.get_alerts(seconds=seconds, limit=limit)}
+
+    def _swarm_coordination_data(self) -> Dict:
+        manager = self._swarm_manager_or_none()
+        if not manager:
+            raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+        return manager.get_coordination_status()
+
+    def _calibration_status_data(self) -> Dict:
+        if not self.calibration_manager:
+            raise HTTPException(status_code=503, detail="Calibration workflows are unavailable.")
+        return self.calibration_manager.get_status()
+
+    def _farm_status_data(self) -> Dict:
+        if not self.farm_manager:
+            raise HTTPException(status_code=503, detail="Farm management integration is unavailable.")
+        return self.farm_manager.get_status()
+
+    def _fleet_status_data(self) -> Dict:
+        manager = self._swarm_manager_or_none()
+        if not manager:
+            raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+
+        config = manager.get_config()
+        telemetry_samples = manager.get_telemetry(limit=500)
+        latest_by_drone: Dict[str, Dict] = {}
+        for sample in telemetry_samples:
+            drone_id = sample.get("source_drone_id")
+            if not drone_id or drone_id in latest_by_drone:
+                continue
+            latest_by_drone[drone_id] = sample
+
+        local_snapshot = self._current_swarm_snapshot()
+        self_drone_id = config.get("self_drone_id")
+        if self_drone_id and self_drone_id not in latest_by_drone and local_snapshot:
+            latest_by_drone[self_drone_id] = {
+                "source_drone_id": self_drone_id,
+                "timestamp": local_snapshot.get("timestamp") or time.time(),
+                "location": {
+                    "latitude": (local_snapshot.get("location") or {}).get("latitude"),
+                    "longitude": (local_snapshot.get("location") or {}).get("longitude"),
+                    "altitude": (local_snapshot.get("location") or {}).get("altitude"),
+                },
+                "velocity": {
+                    "ground_speed_mps": local_snapshot.get("ground_speed"),
+                    "heading_deg": local_snapshot.get("heading"),
+                },
+                "vehicle": {
+                    "armed": local_snapshot.get("armed"),
+                    "mode": local_snapshot.get("mode"),
+                },
+            }
+
+        drones = []
+        peer_entries = config.get("peers", []) or []
+        peer_lookup = {peer.get("drone_id"): peer for peer in peer_entries if peer.get("drone_id")}
+        for peer in peer_entries:
+            drone_id = peer.get("drone_id")
+            sample = latest_by_drone.get(drone_id, {})
+            location = sample.get("location") or {}
+            velocity = sample.get("velocity") or {}
+            vehicle = sample.get("vehicle") or {}
+            drones.append(
+                {
+                    "drone_id": drone_id,
+                    "callsign": peer.get("callsign"),
+                    "role": peer.get("role"),
+                    "transport": peer.get("transport"),
+                    "capabilities": peer.get("capabilities", []),
+                    "trust": peer.get("trust"),
+                    "status": "active" if sample else peer.get("status") or "staged",
+                    "last_heartbeat": peer.get("last_heartbeat"),
+                    "last_seen_at": sample.get("timestamp"),
+                    "position": {
+                        "latitude": location.get("latitude"),
+                        "longitude": location.get("longitude"),
+                        "altitude": location.get("altitude"),
+                        "heading": velocity.get("heading_deg"),
+                    }
+                    if location.get("latitude") is not None and location.get("longitude") is not None
+                    else None,
+                    "vehicle": vehicle or None,
+                    "sample_id": sample.get("sample_id"),
+                    "sequence": sample.get("sequence"),
+                }
+            )
+
+        if self_drone_id and self_drone_id not in peer_lookup:
+            sample = latest_by_drone.get(self_drone_id)
+            if sample:
+                location = sample.get("location") or {}
+                velocity = sample.get("velocity") or {}
+                drones.insert(
+                    0,
+                    {
+                        "drone_id": self_drone_id,
+                        "callsign": "Companion",
+                        "role": config.get("role"),
+                        "transport": config.get("transport"),
+                        "capabilities": ["telemetry", "mission"],
+                        "trust": "primary",
+                        "status": "active",
+                        "last_heartbeat": None,
+                        "last_seen_at": sample.get("timestamp"),
+                        "position": {
+                            "latitude": location.get("latitude"),
+                            "longitude": location.get("longitude"),
+                            "altitude": location.get("altitude"),
+                            "heading": velocity.get("heading_deg"),
+                        },
+                        "vehicle": sample.get("vehicle") or None,
+                        "sample_id": sample.get("sample_id"),
+                        "sequence": sample.get("sequence"),
+                    },
+                )
+
+        active_drones = [drone for drone in drones if drone.get("status") == "active"]
+        return {
+            "fleet_id": config.get("swarm_id"),
+            "self_drone_id": self_drone_id,
+            "enabled": bool(config.get("enabled")),
+            "peer_count": len(peer_entries),
+            "active_drone_count": len(active_drones),
+            "drones": drones,
+            "fusion": self._swarm_fusion_state_data(),
+            "status": self._swarm_status_data(),
+            "updated_at": time.time(),
+        }
+
+    def _prescription_status_data(self) -> Dict:
+        if not self.payload_controller:
+            raise HTTPException(status_code=503, detail="Payload management is unavailable.")
+        return self.payload_controller.get_prescription_status()
+
+    def _prescription_maps_data(self) -> Dict:
+        if not self.payload_controller:
+            raise HTTPException(status_code=503, detail="Payload management is unavailable.")
+        return {
+            "maps": self.payload_controller.list_prescription_maps(),
+            "status": self.payload_controller.get_prescription_status(),
+        }
+
+    def _weather_status_data(self) -> Dict:
+        return self.weather_service.get_status() if self.weather_service else {"enabled": False}
+
+    def _edge_ai_status_data(self) -> Dict:
+        if not self.edge_ai_detector:
+            return {"enabled": False, "available": False}
+        return self.edge_ai_detector.get_status()
+
     def _current_safety_snapshot(self) -> Dict:
         snapshot = self.telemetry_manager.get_current() or {}
         if not snapshot and hasattr(self.connection_manager, "get_vehicle_state"):
@@ -1141,6 +1480,55 @@ class ServerAPI:
 
     def _mapping_planner(self) -> MappingPlanner:
         return MappingPlanner(self._mapping_camera_spec())
+
+    def _preview_image_from_geotiff(self, source_bytes: bytes, max_preview_size: int) -> tuple[bytes, Dict]:
+        if Image is None:
+            raise HTTPException(status_code=503, detail="Pillow is required for GeoTIFF previews.")
+
+        try:
+            with Image.open(io.BytesIO(source_bytes)) as image:
+                if image.format not in {"TIFF", "TIF"}:
+                    raise HTTPException(status_code=415, detail="Only GeoTIFF/TIFF images are supported.")
+
+                width, height = image.size
+                scale = min(1.0, float(max_preview_size) / float(max(width, height)))
+                if scale < 1.0:
+                    preview_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+                    preview = image.convert("RGB").resize(preview_size, Image.Resampling.LANCZOS)
+                else:
+                    preview = image.convert("RGB")
+
+                preview_array = np.asarray(preview)
+                if preview_array.ndim == 2:
+                    preview_array = cv2.cvtColor(preview_array, cv2.COLOR_GRAY2RGB)
+
+                return self._image_to_png_bytes(preview_array), {
+                    "source_width_px": width,
+                    "source_height_px": height,
+                    "preview_width_px": int(preview_array.shape[1]),
+                    "preview_height_px": int(preview_array.shape[0]),
+                }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to read GeoTIFF: {exc}") from exc
+
+    def _geotiff_asset_response(self, asset: Dict) -> Dict:
+        return {
+            "asset_id": asset["asset_id"],
+            "name": asset["name"],
+            "source_filename": asset["source_filename"],
+            "bounds": asset["bounds"],
+            "source_width_px": asset["source_width_px"],
+            "source_height_px": asset["source_height_px"],
+            "preview_width_px": asset["preview_width_px"],
+            "preview_height_px": asset["preview_height_px"],
+            "source_size_bytes": asset["source_size_bytes"],
+            "mime_type": asset["mime_type"],
+            "created_at": asset["created_at"],
+            "updated_at": asset["updated_at"],
+            "preview_url": f"/api/mapping/geotiff/{asset['asset_id']}/preview",
+        }
 
     def _field_boundary_from_request(self, request: FieldBoundaryRequest):
         from ..missions.planner import FieldBoundary, GeoPoint
@@ -1377,6 +1765,8 @@ class ServerAPI:
         obstacle_config = navigation_config.get("obstacle_avoidance", {})
         terrain_config = navigation_config.get("terrain_following", {})
         obstacle_status = (navigation_status.get("obstacle_avoidance") or {}).get("sensor") or {}
+        weather_status = self._weather_status_data()
+        edge_ai_status = self._edge_ai_status_data()
 
         photo_directory = None
         storage = None
@@ -1422,6 +1812,11 @@ class ServerAPI:
             "terrain_following_expected": bool(
                 config.payload.terrain_following_enabled or terrain_config.get("enabled")
             ),
+            "weather_expected": bool(config.weather.enabled and config.weather.station_id),
+            "weather_status": weather_status,
+            "weather_briefing": (weather_status.get("last_briefing") if weather_status else None),
+            "edge_ai_expected": bool(config.edge_ai.enabled),
+            "edge_ai_status": edge_ai_status,
             "navigation_config": navigation_config,
             "navigation_status": navigation_status,
             "obstacle_avoidance_sensor": obstacle_status,
@@ -1446,6 +1841,7 @@ class ServerAPI:
         blocking_reasons.extend(self._get_navigation_blockers(checks, include_armable=True))
         blocking_reasons.extend(self._get_camera_blockers(checks))
         blocking_reasons.extend(self._get_payload_readiness_blockers(checks))
+        blocking_reasons.extend(self._get_weather_blockers(checks))
         blocking_reasons.extend(self._get_system_blockers(checks))
         blocking_reasons.extend(self._get_companion_safety_blockers(checks))
         telemetry_age = checks.get("telemetry_age_seconds")
@@ -1509,6 +1905,18 @@ class ServerAPI:
         if checks["camera_trigger_expected"] and not checks["camera_trigger_available"]:
             blocking_reasons.append("Camera trigger is enabled but unavailable.")
         return blocking_reasons
+
+    def _get_weather_blockers(self, checks: Dict) -> List[str]:
+        if not checks.get("weather_expected"):
+            return []
+
+        weather_status = checks.get("weather_status") or {}
+        briefing = weather_status.get("last_briefing") or {}
+        if not briefing:
+            return ["Weather briefing is enabled but no METAR/TAF briefing is available."]
+        if not briefing.get("ready", False):
+            return list(briefing.get("blocking_reasons") or ["Weather briefing indicates unsafe conditions."])
+        return []
 
     def _get_armable_blockers(self, checks: Dict) -> List[str]:
         if checks["is_armable"] is False:
@@ -1830,6 +2238,34 @@ class ServerAPI:
                         "config_database_file": config.api.config_database_file,
                         "cors_origins": config.api.cors_origins,
                     },
+                    "storage": {
+                        "geotiff_database_file": config.storage.geotiff_database_file,
+                        "geotiff_asset_directory": config.storage.geotiff_asset_directory,
+                        "swarm_database_file": config.storage.swarm_database_file,
+                    },
+                    "weather": {
+                        "enabled": config.weather.enabled,
+                        "station_id": config.weather.station_id,
+                        "metar_url_template": config.weather.metar_url_template,
+                        "taf_url_template": config.weather.taf_url_template,
+                        "timeout_seconds": config.weather.timeout_seconds,
+                        "max_metar_age_minutes": config.weather.max_metar_age_minutes,
+                        "min_visibility_sm": config.weather.min_visibility_sm,
+                        "min_ceiling_ft": config.weather.min_ceiling_ft,
+                        "max_wind_kt": config.weather.max_wind_kt,
+                        "max_gust_kt": config.weather.max_gust_kt,
+                        "allow_ifr": config.weather.allow_ifr,
+                    },
+                    "edge_ai": {
+                        "enabled": config.edge_ai.enabled,
+                        "backend": config.edge_ai.backend,
+                        "model_path": config.edge_ai.model_path,
+                        "labels_path": config.edge_ai.labels_path,
+                        "input_size": config.edge_ai.input_size,
+                        "confidence_threshold": config.edge_ai.confidence_threshold,
+                        "iou_threshold": config.edge_ai.iou_threshold,
+                        "sample_interval_seconds": config.edge_ai.sample_interval_seconds,
+                    },
                     "mavlink": {
                         "connection_type": config.mavlink.connection_type.value,
                         "port": config.mavlink.port,
@@ -2100,6 +2536,66 @@ class ServerAPI:
                 status="success",
                 message="Readiness checks completed",
                 data=self._get_readiness_data(),
+            )
+
+        @self.app.post(
+            "/api/weather/briefing",
+            response_model=StatusResponse,
+            tags=["Weather"],
+            dependencies=protected,
+        )
+        async def create_weather_briefing(request: WeatherBriefingRequest):
+            briefing = self.weather_service.build_briefing(
+                station_id=request.station_id,
+                metar_raw=request.metar_raw,
+                taf_raw=request.taf_raw,
+            )
+            return StatusResponse(
+                status="success",
+                message="Weather briefing generated",
+                data=briefing.to_dict(),
+            )
+
+        @self.app.get(
+            "/api/weather/status",
+            response_model=StatusResponse,
+            tags=["Weather"],
+            dependencies=protected,
+        )
+        async def weather_status():
+            return StatusResponse(
+                status="success",
+                message="Weather status retrieved",
+                data=self._weather_status_data(),
+            )
+
+        @self.app.post(
+            "/api/vision/obstacles/scan",
+            response_model=StatusResponse,
+            tags=["Vision"],
+            dependencies=protected,
+        )
+        async def scan_obstacles(request: Optional[EdgeAiScanRequest] = None):
+            if not self.edge_ai_detector:
+                raise HTTPException(status_code=503, detail="Edge AI detector is not configured.")
+            result = self.edge_ai_detector.scan()
+            return StatusResponse(
+                status="success",
+                message="Obstacle scan completed",
+                data=result,
+            )
+
+        @self.app.get(
+            "/api/vision/obstacles/status",
+            response_model=StatusResponse,
+            tags=["Vision"],
+            dependencies=protected,
+        )
+        async def vision_status():
+            return StatusResponse(
+                status="success",
+                message="Edge AI status retrieved",
+                data=self._edge_ai_status_data(),
             )
 
         @self.app.get("/swagger", include_in_schema=False)
@@ -2428,6 +2924,276 @@ class ServerAPI:
                 status="success",
                 message="Navigation sensor data retrieved",
                 data=self._get_navigation_sensor_status(),
+            )
+
+        @self.app.get(
+            "/api/swarm/config",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def get_swarm_config():
+            return StatusResponse(
+                status="success",
+                message="Swarm configuration retrieved",
+                data=self._swarm_config_data(),
+            )
+
+        @self.app.put(
+            "/api/swarm/config",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def update_swarm_config(request: SwarmConfig, x_control_token: Optional[str] = Header(None)):
+            action = "swarm.config_update"
+            parameters = request.model_dump(mode="json")
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                manager = self._swarm_manager_or_none()
+                if not manager:
+                    raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+                updated = manager.update_config(parameters)
+                self._audit_command(action, "success", parameters=parameters, details={"swarm_id": updated["swarm_id"]})
+                return StatusResponse(
+                    status="success",
+                    message="Swarm configuration updated",
+                    data=updated,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/swarm/config/validate",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def validate_swarm_config(request: SwarmConfig):
+            manager = self._swarm_manager_or_none()
+            if not manager:
+                raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+            validated = manager.validate_config(request.model_dump(mode="json"))
+            return StatusResponse(
+                status="success",
+                message="Swarm configuration validated",
+                data=validated,
+            )
+
+        @self.app.get(
+            "/api/swarm/status",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def get_swarm_status():
+            return StatusResponse(
+                status="success",
+                message="Swarm status retrieved",
+                data=self._swarm_status_data(),
+            )
+
+        @self.app.get(
+            "/api/swarm/telemetry",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def get_swarm_telemetry(seconds: Optional[int] = Query(None, ge=1), limit: Optional[int] = Query(None, ge=1)):
+            return StatusResponse(
+                status="success",
+                message="Swarm telemetry retrieved",
+                data=self._swarm_telemetry_data(seconds=seconds, limit=limit),
+            )
+
+        @self.app.get(
+            "/api/swarm/telemetry/history",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def get_swarm_telemetry_history(seconds: Optional[int] = Query(None, ge=1), limit: Optional[int] = Query(None, ge=1)):
+            return StatusResponse(
+                status="success",
+                message="Swarm telemetry history retrieved",
+                data=self._swarm_telemetry_data(seconds=seconds, limit=limit),
+            )
+
+        @self.app.get(
+            "/api/swarm/alerts",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def get_swarm_alerts(seconds: Optional[int] = Query(None, ge=1), limit: Optional[int] = Query(None, ge=1)):
+            return StatusResponse(
+                status="success",
+                message="Swarm alerts retrieved",
+                data=self._swarm_alert_data(seconds=seconds, limit=limit),
+            )
+
+        @self.app.get(
+            "/api/swarm/separation",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def get_swarm_separation():
+            state = self._swarm_fusion_state_data()
+            return StatusResponse(
+                status="success",
+                message="Swarm separation state retrieved",
+                data={
+                    "alerts": state.get("separation_alerts", []),
+                    "nearest_peer": state.get("nearest_peer"),
+                },
+            )
+
+        @self.app.get(
+            "/api/swarm/fusion",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def get_swarm_fusion():
+            return StatusResponse(
+                status="success",
+                message="Swarm fusion state retrieved",
+                data=self._swarm_fusion_state_data(),
+            )
+
+        @self.app.get(
+            "/api/swarm/peers",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def list_swarm_peers():
+            manager = self._swarm_manager_or_none()
+            if not manager:
+                raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+            return StatusResponse(
+                status="success",
+                message="Swarm peers retrieved",
+                data={"peers": manager.get_peers()},
+            )
+
+        @self.app.get(
+            "/api/swarm/peers/{drone_id}",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def get_swarm_peer(drone_id: str):
+            manager = self._swarm_manager_or_none()
+            if not manager:
+                raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+            peer = manager.get_peer(drone_id)
+            if not peer:
+                raise HTTPException(status_code=404, detail="Swarm peer not found.")
+            return StatusResponse(
+                status="success",
+                message="Swarm peer retrieved",
+                data=peer,
+            )
+
+        @self.app.post(
+            "/api/swarm/peers/{drone_id}/heartbeat",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def heartbeat_swarm_peer(drone_id: str):
+            manager = self._swarm_manager_or_none()
+            if not manager:
+                raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+            peer = manager.heartbeat_peer(drone_id)
+            if not peer:
+                raise HTTPException(status_code=404, detail="Swarm peer not found.")
+            return StatusResponse(
+                status="success",
+                message="Swarm peer heartbeat recorded",
+                data=peer,
+            )
+
+        @self.app.post(
+            "/api/swarm/broadcast",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def broadcast_swarm_state():
+            manager = self._swarm_manager_or_none()
+            if not manager:
+                raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+            snapshot = self._current_swarm_snapshot()
+            sample = manager.broadcast_local_snapshot(snapshot)
+            if not sample:
+                raise HTTPException(status_code=503, detail="No swarm telemetry snapshot is available.")
+            fusion = manager.get_fusion_state() or manager.recompute_fusion()
+            return StatusResponse(
+                status="success",
+                message="Swarm telemetry broadcasted",
+                data={"sample": sample, "fusion": fusion},
+            )
+
+        @self.app.post(
+            "/api/swarm/fusion/recompute",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def recompute_swarm_fusion():
+            manager = self._swarm_manager_or_none()
+            if not manager:
+                raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+            return StatusResponse(
+                status="success",
+                message="Swarm fusion recomputed",
+                data=manager.recompute_fusion(),
+            )
+
+        @self.app.post(
+            "/api/swarm/fusion/reset",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def reset_swarm_fusion():
+            manager = self._swarm_manager_or_none()
+            if not manager:
+                raise HTTPException(status_code=503, detail="Swarm management is unavailable.")
+            return StatusResponse(
+                status="success",
+                message="Swarm fusion reset",
+                data=manager.reset(),
+            )
+
+        @self.app.get(
+            "/api/swarm/coordination",
+            response_model=StatusResponse,
+            tags=["Swarm"],
+            dependencies=protected,
+        )
+        async def get_swarm_coordination():
+            return StatusResponse(
+                status="success",
+                message="Swarm coordination retrieved",
+                data=self._swarm_coordination_data(),
+            )
+
+        @self.app.get(
+            "/api/fleet/status",
+            response_model=StatusResponse,
+            tags=["Fleet"],
+            dependencies=protected,
+        )
+        async def get_fleet_status():
+            return StatusResponse(
+                status="success",
+                message="Fleet status retrieved",
+                data=self._fleet_status_data(),
             )
 
         @self.app.post(
@@ -3446,6 +4212,134 @@ class ServerAPI:
                 raise
 
         @self.app.post(
+            "/api/mapping/geotiff/upload",
+            response_model=StatusResponse,
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def upload_geotiff(
+            request: Request,
+            x_control_token: Optional[str] = Header(None),
+            name: Optional[str] = Query(default=None, max_length=120),
+            filename: Optional[str] = Query(default=None, max_length=260),
+            north: float = Query(..., ge=-90.0, le=90.0),
+            south: float = Query(..., ge=-90.0, le=90.0),
+            east: float = Query(..., ge=-180.0, le=180.0),
+            west: float = Query(..., ge=-180.0, le=180.0),
+            max_preview_size: int = Query(default=4096, ge=256, le=10000),
+        ):
+            action = "mapping.geotiff_upload"
+            parameters = {
+                "name": name,
+                "filename": filename,
+                "north": north,
+                "south": south,
+                "east": east,
+                "west": west,
+                "max_preview_size": max_preview_size,
+            }
+            try:
+                self._require_command_authority(x_control_token)
+                source_bytes = await request.body()
+                if not source_bytes:
+                    raise HTTPException(status_code=400, detail="GeoTIFF payload is empty.")
+
+                content_type = (request.headers.get("content-type") or "").lower()
+                if content_type and "tiff" not in content_type and "octet-stream" not in content_type:
+                    raise HTTPException(status_code=415, detail="Upload must be a TIFF/GeoTIFF payload.")
+
+                bounds = GeoTiffBoundsRequest.model_validate(
+                    {"north": north, "south": south, "east": east, "west": west}
+                )
+                preview_bytes, preview_meta = self._preview_image_from_geotiff(source_bytes, max_preview_size)
+                asset = self.geotiff_assets.save_asset(
+                    name=name,
+                    source_filename=filename,
+                    bounds=bounds.model_dump(),
+                    source_bytes=source_bytes,
+                    preview_bytes=preview_bytes,
+                    preview_meta=preview_meta,
+                    mime_type=(request.headers.get("content-type") or "image/tiff").split(";")[0].strip() or "image/tiff",
+                )
+                self._audit_command(action, "success", parameters=parameters, details={"asset_id": asset["asset_id"]})
+                return StatusResponse(
+                    status="success",
+                    message="GeoTIFF uploaded",
+                    data=self._geotiff_asset_response(asset),
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/mapping/geotiff",
+            response_model=StatusResponse,
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def list_geotiff_assets():
+            assets = [self._geotiff_asset_response(asset) for asset in self.geotiff_assets.list_assets()]
+            return StatusResponse(
+                status="success",
+                message="GeoTIFF assets retrieved",
+                data={"assets": assets},
+            )
+
+        @self.app.get(
+            "/api/mapping/geotiff/{asset_id}",
+            response_model=StatusResponse,
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def get_geotiff_asset(asset_id: str):
+            metadata = self.geotiff_assets.get_asset(asset_id)
+            if not metadata:
+                raise HTTPException(status_code=404, detail="GeoTIFF asset not found.")
+            return StatusResponse(
+                status="success",
+                message="GeoTIFF metadata retrieved",
+                data=self._geotiff_asset_response(metadata),
+            )
+
+        @self.app.get(
+            "/api/mapping/geotiff/{asset_id}/preview",
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def get_geotiff_preview(asset_id: str):
+            metadata = self.geotiff_assets.get_asset(asset_id)
+            if not metadata:
+                raise HTTPException(status_code=404, detail="GeoTIFF asset not found.")
+            preview_path = Path(metadata["preview_path"])
+            if not preview_path.is_file():
+                raise HTTPException(status_code=404, detail="GeoTIFF preview not found.")
+            return FileResponse(preview_path, media_type="image/png")
+
+        @self.app.delete(
+            "/api/mapping/geotiff/{asset_id}",
+            response_model=StatusResponse,
+            tags=["Mapping"],
+            dependencies=protected,
+        )
+        async def delete_geotiff_asset(asset_id: str, x_control_token: Optional[str] = Header(None)):
+            action = "mapping.geotiff_delete"
+            parameters = {"asset_id": asset_id}
+            try:
+                self._require_command_authority(x_control_token)
+                removed = self.geotiff_assets.delete_asset(asset_id)
+                if not removed:
+                    raise HTTPException(status_code=404, detail="GeoTIFF asset not found.")
+                self._audit_command(action, "success", parameters=parameters, details={"asset_id": asset_id})
+                return StatusResponse(
+                    status="success",
+                    message="GeoTIFF asset deleted",
+                    data={"asset_id": asset_id},
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
             "/api/mapping/point-cloud/scan",
             response_model=StatusResponse,
             tags=["Mapping"],
@@ -3608,6 +4502,259 @@ class ServerAPI:
                 message="Payload status retrieved",
                 data=self.payload_controller.get_payload_status(),
             )
+
+        @self.app.get(
+            "/api/payload/prescription/status",
+            response_model=StatusResponse,
+            tags=["Payload"],
+            dependencies=protected,
+        )
+        async def get_prescription_status():
+            return StatusResponse(
+                status="success",
+                message="Prescription status retrieved",
+                data=self._prescription_status_data(),
+            )
+
+        @self.app.get(
+            "/api/payload/prescription/maps",
+            response_model=StatusResponse,
+            tags=["Payload"],
+            dependencies=protected,
+        )
+        async def list_prescription_maps():
+            return StatusResponse(
+                status="success",
+                message="Prescription maps retrieved",
+                data=self._prescription_maps_data(),
+            )
+
+        @self.app.post(
+            "/api/payload/prescription/maps",
+            response_model=StatusResponse,
+            tags=["Payload"],
+            dependencies=protected,
+        )
+        async def import_prescription_map(request: PrescriptionImportRequest, x_control_token: Optional[str] = Header(None)):
+            action = "payload.prescription_import"
+            parameters = request.model_dump(mode="json")
+            try:
+                if not getattr(self.payload_controller, "prescription_controller", None):
+                    raise HTTPException(status_code=503, detail="Prescription control is unavailable.")
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                result = self.payload_controller.import_prescription_map(
+                    request.payload_text,
+                    request.name,
+                    source_format=request.source_format,
+                    activate=request.activate,
+                )
+                self._audit_command(action, "success", parameters=parameters, details={"map_id": result.get("map_id")})
+                return StatusResponse(
+                    status="success",
+                    message="Prescription map imported",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/payload/prescription/maps/activate",
+            response_model=StatusResponse,
+            tags=["Payload"],
+            dependencies=protected,
+        )
+        async def activate_prescription_map(request: PrescriptionActivateRequest, x_control_token: Optional[str] = Header(None)):
+            action = "payload.prescription_activate"
+            parameters = request.model_dump(mode="json")
+            try:
+                if not getattr(self.payload_controller, "prescription_controller", None):
+                    raise HTTPException(status_code=503, detail="Prescription control is unavailable.")
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                result = self.payload_controller.activate_prescription_map(request.map_id)
+                if not result:
+                    raise HTTPException(status_code=404, detail="Prescription map not found.")
+                self._audit_command(action, "success", parameters=parameters, details={"map_id": request.map_id})
+                return StatusResponse(
+                    status="success",
+                    message="Prescription map activated",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/calibration/status",
+            response_model=StatusResponse,
+            tags=["Calibration"],
+            dependencies=protected,
+        )
+        async def get_calibration_status():
+            return StatusResponse(
+                status="success",
+                message="Calibration workflow status retrieved",
+                data=self._calibration_status_data(),
+            )
+
+        @self.app.post(
+            "/api/calibration/rtk/base-stations",
+            response_model=StatusResponse,
+            tags=["Calibration"],
+            dependencies=protected,
+        )
+        async def save_base_station(request: BaseStationWizardRequest, x_control_token: Optional[str] = Header(None)):
+            action = "calibration.base_station_save"
+            parameters = request.model_dump(mode="json")
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                if not self.calibration_manager:
+                    raise HTTPException(status_code=503, detail="Calibration workflows are unavailable.")
+                result = self.calibration_manager.save_base_station(request.model_dump(mode="json"), activate=request.activate)
+                self._audit_command(action, "success", parameters=parameters, details={"station_id": result.get("station_id")})
+                return StatusResponse(
+                    status="success",
+                    message="Base station saved",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/calibration/rtk/base-stations/{station_id}/activate",
+            response_model=StatusResponse,
+            tags=["Calibration"],
+            dependencies=protected,
+        )
+        async def activate_base_station(station_id: str, x_control_token: Optional[str] = Header(None)):
+            action = "calibration.base_station_activate"
+            parameters = {"station_id": station_id}
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                if not self.calibration_manager:
+                    raise HTTPException(status_code=503, detail="Calibration workflows are unavailable.")
+                result = self.calibration_manager.activate_base_station(station_id)
+                if not result:
+                    raise HTTPException(status_code=404, detail="Base station not found.")
+                self._audit_command(action, "success", parameters=parameters, details={"station_id": station_id})
+                return StatusResponse(
+                    status="success",
+                    message="Base station activated",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/calibration/ppk/process",
+            response_model=StatusResponse,
+            tags=["Calibration"],
+            dependencies=protected,
+        )
+        async def process_ppk(request: PpkProcessRequest, x_control_token: Optional[str] = Header(None)):
+            action = "calibration.ppk_process"
+            parameters = request.model_dump(mode="json", exclude_none=True)
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                if not self.calibration_manager:
+                    raise HTTPException(status_code=503, detail="Calibration workflows are unavailable.")
+                result = self.calibration_manager.process_ppk_job(request.model_dump(mode="json"))
+                self._audit_command(action, "success", parameters=parameters, details={"job_id": result.get("job_id")})
+                return StatusResponse(
+                    status="success",
+                    message="PPK post-processing completed",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.get(
+            "/api/farm/status",
+            response_model=StatusResponse,
+            tags=["Farm"],
+            dependencies=protected,
+        )
+        async def get_farm_status():
+            return StatusResponse(
+                status="success",
+                message="Farm integration status retrieved",
+                data=self._farm_status_data(),
+            )
+
+        @self.app.post(
+            "/api/farm/integrations/isoxml/export",
+            response_model=StatusResponse,
+            tags=["Farm"],
+            dependencies=protected,
+        )
+        async def export_isoxml(request: FarmExportRequest, x_control_token: Optional[str] = Header(None)):
+            action = "farm.isoxml_export"
+            parameters = request.model_dump(mode="json")
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                if not self.farm_manager:
+                    raise HTTPException(status_code=503, detail="Farm management integration is unavailable.")
+                result = self.farm_manager.export_isoxml(session=request.session)
+                self._audit_command(action, "success", parameters=parameters, details={"session": request.session})
+                return StatusResponse(
+                    status="success",
+                    message="ISOXML export generated",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/farm/integrations/agleader/sync",
+            response_model=StatusResponse,
+            tags=["Farm"],
+            dependencies=protected,
+        )
+        async def sync_agleader(request: FarmExportRequest, x_control_token: Optional[str] = Header(None)):
+            action = "farm.agleader_sync"
+            parameters = request.model_dump(mode="json")
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                if not self.farm_manager:
+                    raise HTTPException(status_code=503, detail="Farm management integration is unavailable.")
+                result = self.farm_manager.sync_agleader(session=request.session)
+                self._audit_command(action, "success", parameters=parameters, details={"session": request.session})
+                return StatusResponse(
+                    status="success",
+                    message="agLeader sync payload prepared",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
+
+        @self.app.post(
+            "/api/farm/reports/automated",
+            response_model=StatusResponse,
+            tags=["Farm"],
+            dependencies=protected,
+        )
+        async def generate_automated_report(request: FarmExportRequest, x_control_token: Optional[str] = Header(None)):
+            action = "farm.automated_report"
+            parameters = request.model_dump(mode="json")
+            try:
+                self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
+                if not self.farm_manager:
+                    raise HTTPException(status_code=503, detail="Farm management integration is unavailable.")
+                result = self.farm_manager.generate_automated_report(session=request.session)
+                self._audit_command(action, "success", parameters=parameters, details={"session": request.session})
+                return StatusResponse(
+                    status="success",
+                    message="Automated farm report generated",
+                    data=result,
+                )
+            except HTTPException as e:
+                self._audit_http_error(action, parameters, e)
+                raise
 
         @self.app.get(
             "/api/payload/spray/sessions",
@@ -4206,6 +5353,46 @@ class ServerAPI:
             finally:
                 self.active_websocket_clients.discard(websocket)
                 self.telemetry_manager.unsubscribe(str(client_id))
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+
+        @self.app.websocket("/ws/swarm")
+        async def websocket_swarm(websocket: WebSocket):
+            if not await self._authorize_websocket(websocket):
+                return
+
+            await websocket.accept()
+            client_id = f"swarm-{id(websocket)}"
+            loop = asyncio.get_running_loop()
+
+            manager = self._swarm_manager_or_none()
+            if not manager:
+                await websocket.close(code=1011, reason="Swarm management is unavailable.")
+                return
+
+            try:
+                manager.subscribe(
+                    client_id,
+                    lambda event: asyncio.run_coroutine_threadsafe(
+                        self._send_ws(websocket, event),
+                        loop,
+                    ),
+                )
+
+                while True:
+                    try:
+                        await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                    except asyncio.TimeoutError:
+                        continue
+                    except WebSocketDisconnect:
+                        break
+
+            except Exception as e:
+                logger.error(f"Swarm WebSocket error: {str(e)}")
+            finally:
+                manager.unsubscribe(client_id)
                 try:
                     await websocket.close()
                 except Exception:

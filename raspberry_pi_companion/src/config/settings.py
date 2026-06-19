@@ -251,6 +251,7 @@ class MissionConfig:
 @dataclass
 class MappingConfig:
     """Photogrammetry, geotagging, and vegetation-mapping configuration."""
+    data_directory: str = os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion")
     survey_front_overlap: float = float(os.getenv("SURVEY_FRONT_OVERLAP", "0.70"))
     survey_side_overlap: float = float(os.getenv("SURVEY_SIDE_OVERLAP", "0.80"))
     survey_target_gsd_cm: float = float(os.getenv("SURVEY_TARGET_GSD_CM", "2.5"))
@@ -307,6 +308,23 @@ class StorageConfig:
     flight_log_cloud_upload_timeout_seconds: int = int(
         os.getenv("FLIGHT_LOG_CLOUD_UPLOAD_TIMEOUT_SECONDS", "30")
     )
+    geotiff_database_file: str = os.getenv(
+        "GEOTIFF_DATABASE_FILE",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "geotiff", "geotiff.sqlite3"),
+    )
+    geotiff_asset_directory: str = os.getenv(
+        "GEOTIFF_ASSET_DIRECTORY",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "geotiff", "assets"),
+    )
+    swarm_database_file: str = os.getenv(
+        "SWARM_DATABASE_FILE",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "swarm", "swarm.sqlite3"),
+    )
+    swarm_database_max_bytes: int = int(os.getenv("SWARM_DATABASE_MAX_BYTES", str(32 * 1024 * 1024)))
+    swarm_database_backup_count: int = int(os.getenv("SWARM_DATABASE_BACKUP_COUNT", "5"))
+    swarm_database_vacuum_interval_seconds: int = int(
+        os.getenv("SWARM_DATABASE_VACUUM_INTERVAL_SECONDS", "3600")
+    )
 
 
 @dataclass
@@ -348,6 +366,91 @@ class SafetyConfig:
     no_fly_zone_seed_file: str = os.getenv("NO_FLY_ZONE_SEED_FILE", "").strip()
 
 
+@dataclass
+class WeatherConfig:
+    """Aviation weather briefing and preflight check configuration."""
+    enabled: bool = _parse_bool(os.getenv("WEATHER_ENABLED", "False"))
+    station_id: str = os.getenv("WEATHER_STATION_ID", "").strip().upper()
+    metar_url_template: str = os.getenv("WEATHER_METAR_URL_TEMPLATE", "").strip()
+    taf_url_template: str = os.getenv("WEATHER_TAF_URL_TEMPLATE", "").strip()
+    timeout_seconds: float = float(os.getenv("WEATHER_TIMEOUT_SECONDS", "10"))
+    max_metar_age_minutes: float = float(os.getenv("WEATHER_MAX_METAR_AGE_MINUTES", "90"))
+    min_visibility_sm: float = float(os.getenv("WEATHER_MIN_VISIBILITY_SM", "3"))
+    min_ceiling_ft: float = float(os.getenv("WEATHER_MIN_CEILING_FT", "1000"))
+    max_wind_kt: float = float(os.getenv("WEATHER_MAX_WIND_KT", "25"))
+    max_gust_kt: float = float(os.getenv("WEATHER_MAX_GUST_KT", "35"))
+    allow_ifr: bool = _parse_bool(os.getenv("WEATHER_ALLOW_IFR", "False"))
+    blocking_hazards: str = os.getenv(
+        "WEATHER_BLOCKING_HAZARDS",
+        "TS,TSRA,TSGR,FG,FZFG,SN,SG,IC,PL,GR,GS,SS,DS,VA",
+    ).strip()
+
+
+@dataclass
+class EdgeAIConfig:
+    """Optional obstacle-detection inference configuration."""
+    enabled: bool = _parse_bool(os.getenv("EDGE_AI_ENABLED", "False"))
+    backend: str = os.getenv("EDGE_AI_BACKEND", "auto").strip().lower()
+    model_path: str = os.getenv("EDGE_AI_MODEL_PATH", "").strip()
+    labels_path: str = os.getenv("EDGE_AI_LABELS_PATH", "").strip()
+    input_size: int = int(os.getenv("EDGE_AI_INPUT_SIZE", "320"))
+    confidence_threshold: float = float(os.getenv("EDGE_AI_CONFIDENCE_THRESHOLD", "0.5"))
+    iou_threshold: float = float(os.getenv("EDGE_AI_IOU_THRESHOLD", "0.45"))
+    sample_interval_seconds: float = float(os.getenv("EDGE_AI_SAMPLE_INTERVAL_SECONDS", "0.5"))
+    obstacle_label_keywords: str = os.getenv(
+        "EDGE_AI_OBSTACLE_LABEL_KEYWORDS",
+        "person,bird,vehicle,car,truck,bus,tree,pole,wall,obstacle,rock",
+    ).strip()
+    report_top_k: int = int(os.getenv("EDGE_AI_REPORT_TOP_K", "5"))
+
+
+@dataclass
+class PrescriptionConfig:
+    """Variable-rate application and prescription map configuration."""
+    enabled: bool = _parse_bool(os.getenv("PRESCRIPTION_ENABLED", "False"))
+    database_file: str = os.getenv(
+        "PRESCRIPTION_DATABASE_FILE",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "prescription", "maps.sqlite3"),
+    )
+    default_map_id: str = os.getenv("PRESCRIPTION_DEFAULT_MAP_ID", "").strip()
+    swath_width_meters: float = float(os.getenv("PRESCRIPTION_SWATH_WIDTH_METERS", "12"))
+    default_rate_liters_per_hectare: float = float(os.getenv("PRESCRIPTION_DEFAULT_RATE_L_PER_HA", "20"))
+    minimum_rate_liters_per_hectare: float = float(os.getenv("PRESCRIPTION_MIN_RATE_L_PER_HA", "1"))
+    maximum_rate_liters_per_hectare: float = float(os.getenv("PRESCRIPTION_MAX_RATE_L_PER_HA", "60"))
+    minimum_speed_mps: float = float(os.getenv("PRESCRIPTION_MIN_SPEED_MPS", "1"))
+    maximum_speed_mps: float = float(os.getenv("PRESCRIPTION_MAX_SPEED_MPS", "15"))
+    synchronize_to_ground_speed: bool = _parse_bool(os.getenv("PRESCRIPTION_SYNC_TO_GROUND_SPEED", "True"))
+
+
+@dataclass
+class CalibrationWorkflowConfig:
+    """RTK/PPK calibration workflow persistence."""
+    database_file: str = os.getenv(
+        "CALIBRATION_WORKFLOW_DATABASE_FILE",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "calibration", "workflow.sqlite3"),
+    )
+
+
+@dataclass
+class FarmIntegrationConfig:
+    """Farm-management integration and reporting configuration."""
+    database_file: str = os.getenv(
+        "FARM_INTEGRATION_DATABASE_FILE",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "farm", "integration.sqlite3"),
+    )
+    isoxml_output_directory: str = os.getenv(
+        "ISOXML_OUTPUT_DIRECTORY",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "farm", "isoxml"),
+    )
+    report_output_directory: str = os.getenv(
+        "FARM_REPORT_OUTPUT_DIRECTORY",
+        os.path.join(os.getenv("APP_DATA_DIRECTORY", "/var/lib/drone-companion"), "farm", "reports"),
+    )
+    agleader_endpoint: str = os.getenv("AGLEADER_ENDPOINT", "").strip()
+    agleader_api_key: str = os.getenv("AGLEADER_API_KEY", "").strip()
+    enabled: bool = _parse_bool(os.getenv("FARM_INTEGRATION_ENABLED", "False"))
+
+
 class Config:
     """Main configuration class"""
 
@@ -360,6 +463,11 @@ class Config:
         self.telemetry = TelemetryConfig()
         self.storage = StorageConfig()
         self.safety = SafetyConfig()
+        self.weather = WeatherConfig()
+        self.edge_ai = EdgeAIConfig()
+        self.prescription = PrescriptionConfig()
+        self.calibration_workflow = CalibrationWorkflowConfig()
+        self.farm_integration = FarmIntegrationConfig()
         self.environment = os.getenv("ENVIRONMENT", "production")
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
 

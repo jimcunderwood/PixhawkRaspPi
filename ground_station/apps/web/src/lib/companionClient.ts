@@ -1,5 +1,17 @@
 export {
+  exportIsoxml,
   buildWebSocketUrl,
   getCompanionBaseLabel as getBaseUrl,
+  generateFarmReport,
+  activatePrescriptionMap,
+  importPrescriptionMap,
+  loadGeoTiffPreview,
   loadCompanionSnapshot,
+  loadFleetStatus,
+  loadPrescriptionMaps,
+  loadPrescriptionStatus,
+  processPpkJob,
+  saveBaseStation,
+  syncAgLeader,
+  uploadGeoTiffPreview,
 } from '../../../../shared/api/companion';

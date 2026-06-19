@@ -6,7 +6,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                    Ground Station (PC/Tablet)               │
 │                      Web Browser / App                       │
-│                   (React, WebGL, REST Client)                │
+│           (React, Web UI, Capacitor mobile shell)            │
 └────────────────┬──────────────────────────────────────────┬─┘
                  │ WiFi / MAVLink Radio                      │
                  │ JSON over HTTP/WebSocket                  │ MAVLink Telemetry
@@ -39,6 +39,12 @@
         │  │  │ - Waypoints      │   │ - Spray Pump        ││ │
         │  │  │ - Field Bounds   │   │ - Camera            ││ │
         │  │  │ - Auto Routes    │   │ - Flow Sensor       ││ │
+        │  │  └──────────────────┘   └──────────────────────┘│ │
+        │  │  ┌──────────────────┐   ┌──────────────────────┐│ │
+        │  │  │ Weather / Vision │   │ Swarm / Fleet State  ││ │
+        │  │  │ - METAR/TAF      │   │ - Leader-follower   ││ │
+        │  │  │ - Obstacle Scan  │   │ - Peer separation   ││ │
+        │  │  │ - Coral / YOLO   │   │ - Fusion state      ││ │
         │  │  └──────────────────┘   └──────────────────────┘│ │
         │  └────────────────────────────────────────────────┘  │
         │                     ▲                                 │
@@ -236,6 +242,14 @@ Health:
 5. Initialize payload controller
 6. Start telemetry collector
 7. Launch FastAPI server
+
+### 7. Swarm, Calibration, and Farm Services
+
+- Swarm coordination persists peer telemetry and fusion state in SQLite so the
+  ground station can render fleet state consistently across restarts.
+- Calibration workflows cover RTK/PPK base-station setup and post-processing.
+- Farm integration normalizes exports and reports for ISOXML and agLeader
+  workflows.
 
 ## Data Flow Diagrams
 

@@ -11,7 +11,13 @@ Python application for Raspberry Pi 4 connected to Pixhawk 4 flight controller.
 - **Navigation Safety**: Configurable obstacle avoidance and terrain-following support
 - **Companion Safety**: Altitude geofencing, no-fly zones, emergency landing zones, and progressive failsafes
 - **Payload Control**: Spray pump, camera (photo/video), flow sensor
-- **Mapping**: Photogrammetry, EXIF geotagging, NDVI, orthomosaic previews, point-cloud scan planning
+- **Weather Briefing**: METAR/TAF pre-flight checks with configurable go/no-go thresholds
+- **Edge AI Pilot**: Optional camera-based obstacle detection with Coral TPU or YOLO backends
+- **Prescription Control**: GPS-synchronized variable-rate application from prescription maps
+- **RTK/PPK Workflows**: Base-station calibration and post-processing support
+- **Farm Integration**: ISOXML, agLeader exports, and automated reporting
+- **Swarm Coordination**: Leader-follower, coverage partitioning, and peer collision avoidance
+- **Mapping**: Photogrammetry, EXIF geotagging, NDVI, orthomosaic previews, SQLite-backed GeoTIFF overlay uploads, point-cloud scan planning
 - **REST API**: Complete RESTful interface for ground station integration
 - **WebSocket Streaming**: Live telemetry streaming to multiple clients
 - **Multi-transport**: Supports Serial, UDP, and TCP MAVLink connections
@@ -57,6 +63,12 @@ Key configuration options:
 - `SURVEY_*`: Photogrammetry overlap, altitude, heading, and terrain-adjustment defaults
 - `CAMERA_*`: Camera sensor geometry used for GSD and trigger timing calculations
 - `NDVI_*`: Band selection and feature toggles for vegetation monitoring
+- `WEATHER_*`: METAR/TAF station, fetch templates, and pre-flight thresholds
+- `EDGE_AI_*`: Optional Coral/YOLO obstacle-detection backend, model paths, and label keywords
+- `GEOTIFF_DATABASE_FILE`: SQLite catalog for uploaded GeoTIFF overlays
+- `GEOTIFF_ASSET_DIRECTORY`: Storage path for uploaded GeoTIFF rasters and previews
+- `SWARM_DATABASE_FILE`: SQLite store for swarm config, peer telemetry, alerts, and fusion state
+- `SWARM_DATABASE_MAX_BYTES`: Rotate the swarm database once it reaches this size
 - `AUDIT_LOG_FILE`: JSONL audit log path, usually under `/var/lib/drone-companion/audit/`
 - `AUDIT_LOG_MAX_BYTES`: Rotate the audit log once it reaches this many bytes
 - `AUDIT_LOG_BACKUP_COUNT`: How many rotated audit files to keep
@@ -92,6 +104,41 @@ source venv/bin/activate
 python main.py
 ```
 
+The companion exposes the live API that the ground station uses at runtime,
+including weather, obstacle-scan, swarm, calibration, and farm integration
+state.
+
+## Docker
+
+Build the companion image from the repository root:
+
+```bash
+docker build -f raspberry_pi_companion/Dockerfile -t raspberry-pi-companion .
+```
+
+Run it with the Pi devices and network access you need:
+
+```bash
+docker run --rm -it \
+  --network host \
+  --device=/dev/serial0 \
+  --device=/dev/gpiomem \
+  -v /var/lib/drone-companion:/var/lib/drone-companion \
+  raspberry-pi-companion
+```
+
+The companion image keeps the hardware-specific packages optional on non-Pi
+systems so CI can build the same Dockerfile without GPIO or SPI hardware.
+
+To run the companion with Docker Compose on the Pi:
+
+```bash
+docker compose --profile companion up -d
+```
+
+That profile uses the companion defaults unless you export overrides in your
+shell or create a root-level `.env` file for Compose variable substitution.
+
 ## API Documentation
 
 Interactive Swagger documentation is available at:
@@ -107,6 +154,11 @@ either an `x-api-key` header or an `api_key` query parameter.
 Flight-control and mission-editing commands also require a command authority
 lease. Acquire one with `POST /api/v1/control/authority`, then send the returned
 token in the `x-control-token` header for protected command requests.
+
+GeoTIFF overlays can be uploaded with `POST /api/v1/mapping/geotiff/upload`
+using a TIFF payload and bounding-box query parameters. The companion stores
+metadata in SQLite, keeps the raster and preview on disk, and exposes the
+preview at `GET /api/v1/mapping/geotiff/{asset_id}/preview`.
 
 ### Health Check
 ```
@@ -164,6 +216,11 @@ POST /api/v1/mapping/geotag/export       - Export geotag CSV from supplied recor
 POST /api/v1/mapping/geotag/exif         - Write EXIF GPS tags into session images
 POST /api/v1/mapping/ndvi/preview        - Generate an NDVI false-color preview PNG
 POST /api/v1/mapping/orthomosaic/preview - Generate a low-res orthomosaic preview PNG
+POST /api/v1/mapping/geotiff/upload      - Store a GeoTIFF and generate a PNG preview
+GET  /api/v1/mapping/geotiff             - List stored GeoTIFF overlays
+GET  /api/v1/mapping/geotiff/{asset_id}  - Get GeoTIFF overlay metadata
+GET  /api/v1/mapping/geotiff/{asset_id}/preview - Fetch the stored preview PNG
+DELETE /api/v1/mapping/geotiff/{asset_id} - Delete a stored GeoTIFF overlay
 POST /api/v1/mapping/point-cloud/scan    - Generate a 3D scan waypoint plan
 ```
 
@@ -173,6 +230,18 @@ GET  /api/v1/navigation/config        - Get avoidance/terrain config and Pixhawk
 POST /api/v1/navigation/config        - Update companion navigation config
 POST /api/v1/navigation/apply         - Apply saved navigation config to Pixhawk params
 GET  /api/v1/navigation/sensors       - Get live obstacle/terrain sensor data
+```
+
+### Weather
+```
+POST /api/v1/weather/briefing         - Build a METAR/TAF briefing from supplied or fetched reports
+GET  /api/v1/weather/status           - Get the current weather integration status
+```
+
+### Vision
+```
+POST /api/v1/vision/obstacles/scan    - Run an obstacle scan against the latest camera frame
+GET  /api/v1/vision/obstacles/status   - Get edge AI detector status
 ```
 
 ### Safety and Compliance

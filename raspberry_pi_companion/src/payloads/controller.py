@@ -17,6 +17,12 @@ from typing import Dict, Iterator, List, Optional
 from enum import Enum
 from abc import ABC, abstractmethod
 
+from ..prescription.controller import (
+    PrescriptionMapConfig,
+    PrescriptionMapStore,
+    PrescriptionRateController,
+)
+
 logger = logging.getLogger(__name__)
 
 SESSION_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -1019,6 +1025,10 @@ class CameraController:
 
         return None
 
+    def get_latest_frame(self):
+        """Return the newest captured frame, if any."""
+        return self._get_latest_frame()
+
     def _safe_session_name(self, session: Optional[str]) -> str:
         if not session:
             return "default"
@@ -1500,8 +1510,9 @@ class CameraController:
 class PayloadController:
     """Master payload controller"""
 
-    def __init__(self, config):
+    def __init__(self, config, prescription_config=None):
         self.config = config
+        self.prescription_config = prescription_config
         self.spray_pump = SprayPump(config.spray_pump_pin)
         self.flow_sensor = None
         self.pressure_sensor = None
@@ -1512,9 +1523,25 @@ class PayloadController:
         self.application_records = SprayApplicationRecordStore(
             config.spray_application_record_directory
         )
+        self.latest_telemetry_snapshot: Optional[Dict] = None
+        self.prescription_controller = None
         self.active_spray_session = None
         self.tank_capacity_liters = config.tank_capacity_liters
         self.tank_min_level_percent = config.tank_min_level_percent
+
+        if prescription_config and getattr(prescription_config, "enabled", False):
+            try:
+                store = PrescriptionMapStore(
+                    PrescriptionMapConfig(path=Path(prescription_config.database_file))
+                )
+                self.prescription_controller = PrescriptionRateController(
+                    prescription_config,
+                    store,
+                )
+                logger.info("Prescription rate control initialized")
+            except Exception as e:
+                logger.error("Failed to initialize prescription control: %s", str(e))
+                self.prescription_controller = None
 
         if config.flow_sensor_enabled:
             flow_sensor = FlowSensor(
@@ -1685,6 +1712,12 @@ class PayloadController:
             "persistent": False,
         }
 
+    def update_telemetry_snapshot(self, telemetry_snapshot: Optional[Dict]) -> None:
+        """Cache the latest telemetry snapshot for rate control decisions."""
+        self.latest_telemetry_snapshot = dict(telemetry_snapshot or {})
+        if self.prescription_controller:
+            self.prescription_controller.update_telemetry(self.latest_telemetry_snapshot)
+
     def arm_spray(
         self,
         session: Optional[str] = None,
@@ -1721,8 +1754,8 @@ class PayloadController:
     def get_payload_status(self) -> Dict:
         """Get all payload status"""
         status = {
-            'spray_pump': self.spray_pump.get_status(),
-            'active_spray_session': self.active_spray_session,
+           'spray_pump': self.spray_pump.get_status(),
+           'active_spray_session': self.active_spray_session,
         }
         
         if self.flow_sensor:
@@ -1747,8 +1780,58 @@ class PayloadController:
         
         if self.camera:
             status['camera'] = self.camera.get_status()
+
+        if self.prescription_controller:
+            status['prescription'] = self.prescription_controller.get_status()
+        else:
+            status['prescription'] = {
+                "enabled": bool(getattr(self.prescription_config, "enabled", False)),
+                "configured": False,
+                "active_map": None,
+                "current_zone": None,
+                "target_rate_liters_per_hectare": None,
+                "current_flow_rate_liters_per_minute": None,
+                "recommended_duty_cycle": None,
+                "ground_speed_mps": (self.latest_telemetry_snapshot or {}).get("ground_speed"),
+                "swath_width_m": getattr(self.prescription_config, "swath_width_meters", None),
+                "updated_at": None,
+            }
         
         return status
+
+    def get_prescription_status(self) -> Dict:
+        if self.prescription_controller:
+            return self.prescription_controller.get_status()
+        return self.get_payload_status().get("prescription", {})
+
+    def list_prescription_maps(self) -> List[Dict]:
+        if not self.prescription_controller:
+            return []
+        return self.prescription_controller.store.list_maps()
+
+    def import_prescription_map(
+        self,
+        payload_text: str,
+        name: str,
+        source_format: Optional[str] = None,
+        activate: bool = True,
+    ) -> Dict:
+        if not self.prescription_controller:
+            raise RuntimeError("Prescription control is not enabled.")
+        return self.prescription_controller.import_payload(
+            payload_text=payload_text,
+            name=name,
+            source_format=source_format,
+            activate=activate,
+        )
+
+    def activate_prescription_map(self, map_id: str) -> Optional[Dict]:
+        if not self.prescription_controller:
+            return None
+        activated = self.prescription_controller.store.activate_map(map_id)
+        if activated:
+            self.prescription_controller.update_telemetry(self.latest_telemetry_snapshot)
+        return activated
 
     def list_spray_sessions(self) -> List[Dict]:
         return self.spray_sessions.list_sessions()

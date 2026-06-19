@@ -192,7 +192,7 @@ sudo reboot
 
 ## Next Steps
 
-1. **Ground Station**: Build React web UI (see ground_station/ directory)
+1. **Ground Station**: Install the operator UI on Linux, macOS, Windows, or Docker (see [ground_station/docs/INSTALLATION.md](../ground_station/docs/INSTALLATION.md))
 2. **Field Testing**: Run test missions in safe area
 3. **Spray Testing**: Calibrate flow sensor for accurate volume tracking
 4. **Integration**: Connect to existing farm management systems

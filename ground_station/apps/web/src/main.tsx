@@ -3,9 +3,17 @@ import ReactDOM from 'react-dom/client';
 import 'leaflet/dist/leaflet.css';
 import App from './App';
 import './styles.css';
+import { loadRuntimeConfig, resolveCompanionBaseUrl } from './runtimeConfig';
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+async function bootstrap() {
+  const runtimeConfig = await loadRuntimeConfig();
+  const companionBaseUrl = resolveCompanionBaseUrl(runtimeConfig);
+
+  ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+    <React.StrictMode>
+      <App companionBaseUrl={companionBaseUrl} />
+    </React.StrictMode>,
+  );
+}
+
+void bootstrap();

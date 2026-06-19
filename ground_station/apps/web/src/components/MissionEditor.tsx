@@ -110,7 +110,7 @@ export function MissionEditor({
       </div>
 
       <p className="hint">
-        Click on the map to add boundary points or mission waypoints. The boundary becomes visible after the third point.
+        Click on the map to add boundary points or mission waypoints. Drag vertices and waypoints to edit them, and use the boundary polygon after the third point.
       </p>
 
       <div className="editor-stats">

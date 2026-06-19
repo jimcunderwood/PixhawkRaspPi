@@ -1,0 +1,27 @@
+services:
+  companion:
+    profiles: ["companion"]
+    build:
+      context: .
+      dockerfile: raspberry_pi_companion/Dockerfile
+    network_mode: host
+    devices:
+      - /dev/serial0:/dev/serial0
+      - /dev/gpiomem:/dev/gpiomem
+    volumes:
+      - companion-data:/var/lib/drone-companion
+    restart: unless-stopped
+
+  ground-station:
+    profiles: ["ground-station"]
+    build:
+      context: .
+      dockerfile: ground_station/apps/web/Dockerfile
+    environment:
+      COMPANION_BASE_URL: ${COMPANION_BASE_URL:-}
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  companion-data:

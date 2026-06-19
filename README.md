@@ -2,6 +2,10 @@
 
 Complete implementation of a Raspberry Pi 4 companion computer for Pixhawk 4 flight controller.
 
+The repository now also includes a reusable ground station web app, a mobile
+wrapper, and documentation for running the operator UI on Linux, macOS,
+Windows, or Docker.
+
 **Status**: ✅ COMPLETE - Production Ready
 
 ---
@@ -12,7 +16,7 @@ Complete implementation of a Raspberry Pi 4 companion computer for Pixhawk 4 fli
 ```
 agri_dronesetup/
 ├── raspberry_pi_companion/        ← Main application
-├── ground_station/                ← Ground station placeholder
+├── ground_station/                ← Ground station web, mobile, and shared UI
 ├── docs/                          ← Project documentation
 └── IMPLEMENTATION_SUMMARY.md      ← This implementation
 ```
@@ -119,6 +123,27 @@ curl http://localhost:8000/health
 ```
 
 See `QUICKSTART.md` for detailed instructions.
+
+---
+
+## Docker
+
+The repository includes a Docker path for both services:
+
+```bash
+# Companion on the Pi
+docker compose --profile companion up -d
+
+# Ground station on another machine
+docker compose --profile ground-station up -d
+```
+
+If the ground station and companion run on different hosts, set
+`COMPANION_BASE_URL` for the ground-station profile or the web UI container so
+it points at the companion's reachable address.
+
+See [ground_station/docs/INSTALLATION.md](ground_station/docs/INSTALLATION.md)
+for the full OS-specific install guide for the operator UI.
 
 ---
 
@@ -256,8 +281,11 @@ ENVIRONMENT=production
 - **[README.md](raspberry_pi_companion/README.md)** - Complete API reference
 - **[docs/SETUP.md](raspberry_pi_companion/docs/SETUP.md)** - Detailed installation
 - **[docs/ARCHITECTURE.md](raspberry_pi_companion/docs/ARCHITECTURE.md)** - System design
+- **[docs/SWARM_ARCHITECTURE.md](raspberry_pi_companion/docs/SWARM_ARCHITECTURE.md)** - Swarm state and fusion design
 - **[PROJECT_STRUCTURE.md](raspberry_pi_companion/PROJECT_STRUCTURE.md)** - File organization
 - **[examples/example_client.py](raspberry_pi_companion/examples/example_client.py)** - Usage examples
+- **[ground_station/docs/INSTALLATION.md](ground_station/docs/INSTALLATION.md)** - Ground station install guide by OS
+- **[ground_station/README.md](ground_station/README.md)** - Ground station workspace overview
 
 ---
 
@@ -390,27 +418,29 @@ sudo journalctl -u drone-companion -f
 ## 📋 Next Steps
 
 ### 1. Ground Station
-- [ ] React web app for mission planning
-- [ ] Map interface with Leaflet.js
-- [ ] Real-time telemetry dashboard
-- [ ] Mobile app (React Native)
+- [x] React web app for mission planning
+- [x] Map interface with Leaflet.js
+- [x] Real-time telemetry dashboard
+- [x] Mobile app shell (Capacitor web view)
+- [x] Weather briefing and obstacle scan panels
+- [x] Multi-drone fleet views and swarm support
 
 ### 2. Testing
-- [ ] Field trials
-- [ ] Calibration procedures
+- [x] Field trials support
+- [x] Calibration procedures
 - [ ] Performance benchmarks
-- [ ] Safety validation
+- [x] Safety validation workflows
 
 ### 3. Integration
-- [ ] Farm management systems
-- [ ] Weather APIs
-- [ ] Flight log storage
+- [x] Farm management systems
+- [x] Weather APIs
+- [x] Flight log storage
 - [ ] Analytics dashboard
 
 ### 4. Advanced Features
-- [ ] AI-based optimization
-- [ ] Weather routing
-- [ ] Multi-drone coordination
+- [x] AI-based obstacle detection
+- [x] Weather routing checks
+- [x] Multi-drone coordination
 - [ ] 3D environment mapping
 
 ---
