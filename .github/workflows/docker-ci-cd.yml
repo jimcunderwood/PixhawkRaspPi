@@ -38,6 +38,11 @@ jobs:
       - name: Run companion tests
         run: docker run --rm companion:test
 
+      - name: Validate companion image tag
+        run: |
+          companion_tag="ghcr.io/${{ github.repository_owner }}/pixhawkrasppi-companion:latest"
+          printf '%s\n' "$companion_tag" | grep -Eq '^[a-z0-9./:-]+$'
+
       - name: Log in to GHCR
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -77,6 +82,11 @@ jobs:
             -f ground_station/apps/web/Dockerfile \
             -t ground-station-web:test \
             .
+
+      - name: Validate ground station image tag
+        run: |
+          ground_station_tag="ghcr.io/${{ github.repository_owner }}/pixhawkrasppi-ground-station-web:latest"
+          printf '%s\n' "$ground_station_tag" | grep -Eq '^[a-z0-9./:-]+$'
 
       - name: Smoke test ground station image
         run: |

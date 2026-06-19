@@ -9,6 +9,7 @@ WORKDIR /app/raspberry_pi_companion
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates \
+      build-essential \
       libgl1 \
       libglib2.0-0 \
       libsm6 \

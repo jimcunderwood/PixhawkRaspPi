@@ -259,9 +259,11 @@ class CalibrationWorkflowManager:
             "job_id": job_id,
             "session": request.get("session"),
             "base_station": base_station,
+            "base_station_id": (base_station or {}).get("station_id"),
             "status": "complete" if summary["sample_count"] else "needs_data",
             "source_label": request.get("source_label") or "telemetry_history",
             "telemetry_window_seconds": request.get("telemetry_window_seconds"),
+            "request": dict(request),
             "summary": summary,
             "quality": {
                 "post_processed_at": time.time(),
