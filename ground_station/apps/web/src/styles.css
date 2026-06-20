@@ -75,12 +75,15 @@ button {
 
 .app-shell {
   position: relative;
+  isolation: isolate;
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   min-height: 100vh;
 }
 
 .sidebar {
+  position: relative;
+  z-index: 5;
   padding: 24px;
   background: linear-gradient(180deg, rgba(8, 15, 27, 0.98), rgba(12, 20, 36, 0.88));
   border-right: 1px solid var(--border);
@@ -88,6 +91,8 @@ button {
 }
 
 .content {
+  position: relative;
+  z-index: 1;
   padding: 24px;
 }
 
@@ -142,6 +147,8 @@ button {
 }
 
 .sidebar-panel {
+  position: relative;
+  z-index: 1;
   padding: 16px;
   margin-top: 16px;
 }
@@ -164,6 +171,8 @@ button {
 }
 
 .settings-panel {
+  position: relative;
+  z-index: 10;
   display: grid;
   gap: 12px;
 }
@@ -221,7 +230,7 @@ button {
   z-index: 2000;
   display: grid;
   place-items: start center;
-  padding: 72px 18px 24px;
+  padding: 128px 18px 24px;
   background: rgba(3, 7, 13, 0.72);
   backdrop-filter: blur(10px);
 }
@@ -230,7 +239,7 @@ button {
   width: min(1100px, calc(100vw - 36px));
   display: grid;
   gap: 16px;
-  max-height: calc(100vh - 96px);
+  max-height: calc(100vh - 152px);
   overflow: auto;
   padding: 22px;
   border-radius: 24px;

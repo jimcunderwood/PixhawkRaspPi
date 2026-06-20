@@ -766,7 +766,7 @@ export function UserSettingsPanel({
             <div className="settings-modal-head">
               <div>
                 <span className="panel-label">User settings</span>
-                <h3 id="user-settings-title">{authenticated ? 'Manage user settings' : 'Sign in or create user'}</h3>
+                <h3 id="user-settings-title">{authenticated ? 'Manage user settings' : authMode === 'create' ? 'Create user' : 'Sign in'}</h3>
               </div>
               <button type="button" className="ghost-button" onClick={() => setUserEditorOpen(false)} disabled={loading || saving}>
                 Close
@@ -796,7 +796,7 @@ export function UserSettingsPanel({
                     : 'No users exist yet. Create the first user to start using the app. You will need the API key from the .env file.'}
                 </p>
               )}
-              {!authenticated ? (
+              {!authenticated && authMode === 'signIn' ? (
                 <section className="auth-card">
                   <div className="auth-card-head">
                     <div>
@@ -830,7 +830,7 @@ export function UserSettingsPanel({
                     </>
                   ) : null}
                 </section>
-              ) : (
+              ) : authenticated ? (
                 <section className="auth-card">
                   <div className="auth-card-head">
                     <div>
@@ -904,27 +904,25 @@ export function UserSettingsPanel({
               ) : null}
               <div className="settings-actions">
                 {!authenticated ? (
-                  <>
-                    {authMode === 'signIn' ? (
-                      <>
-                        <button type="button" className="secondary-button" onClick={handleSignIn} disabled={loading}>
-                          Sign in
-                        </button>
-                        <button type="button" className="ghost-button" onClick={() => setAuthMode('create')} disabled={loading}>
-                          Create user
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button type="button" className="secondary-button" onClick={handleCreateUser} disabled={loading}>
-                          {loading ? 'Creating...' : 'Save user'}
-                        </button>
-                        <button type="button" className="ghost-button" onClick={() => setAuthMode('signIn')} disabled={loading}>
-                          Back to sign in
-                        </button>
-                      </>
-                    )}
-                  </>
+                  authMode === 'signIn' ? (
+                    <>
+                      <button type="button" className="secondary-button" onClick={handleSignIn} disabled={loading}>
+                        Sign in
+                      </button>
+                      <button type="button" className="ghost-button" onClick={() => setAuthMode('create')} disabled={loading}>
+                        Create user
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" className="secondary-button" onClick={handleCreateUser} disabled={loading}>
+                        {loading ? 'Creating...' : 'Save user'}
+                      </button>
+                      <button type="button" className="ghost-button" onClick={() => setAuthMode('signIn')} disabled={loading}>
+                        Back to sign in
+                      </button>
+                    </>
+                  )
                 ) : (
                   <>
                     <button type="button" className="secondary-button" onClick={onSave} disabled={saving || loading}>
