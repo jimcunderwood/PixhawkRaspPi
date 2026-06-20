@@ -218,10 +218,10 @@ button {
 .settings-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 2000;
   display: grid;
-  place-items: center;
-  padding: 18px;
+  place-items: start center;
+  padding: 72px 18px 24px;
   background: rgba(3, 7, 13, 0.72);
   backdrop-filter: blur(10px);
 }
@@ -230,7 +230,7 @@ button {
   width: min(1100px, calc(100vw - 36px));
   display: grid;
   gap: 16px;
-  max-height: calc(100vh - 36px);
+  max-height: calc(100vh - 96px);
   overflow: auto;
   padding: 22px;
   border-radius: 24px;
@@ -241,6 +241,7 @@ button {
 
 .setup-modal {
   width: min(1100px, calc(100vw - 36px));
+  margin-top: 0;
 }
 
 .auth-card {

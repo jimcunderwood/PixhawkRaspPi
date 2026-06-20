@@ -103,6 +103,7 @@ export function UserSettingsPanel({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [userEditorOpen, setUserEditorOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<'signIn' | 'create' | 'session'>('signIn');
   const [createUsername, setCreateUsername] = useState('');
   const [createPassword, setCreatePassword] = useState('');
   const [createDisplayName, setCreateDisplayName] = useState('');
@@ -112,6 +113,7 @@ export function UserSettingsPanel({
   const droneIdInputRef = useRef<HTMLInputElement | null>(null);
   const userNameInputRef = useRef<HTMLInputElement | null>(null);
   const autoOpenedLoginPrompt = useRef(false);
+  const previousAuthenticated = useRef<boolean | null>(null);
 
   const activeProfileIndex = useMemo(() => {
     const exactIndex = settingsDraft.profiles.findIndex((profile) => profile.profile_id === settingsDraft.active_profile_id);
@@ -149,8 +151,19 @@ export function UserSettingsPanel({
     if (!autoOpenedLoginPrompt.current && !authenticated && !hasUsers) {
       autoOpenedLoginPrompt.current = true;
       setUserEditorOpen(true);
+      setAuthMode('signIn');
     }
   }, [authenticated, hasUsers]);
+
+  useEffect(() => {
+    const wasAuthenticated = previousAuthenticated.current;
+    previousAuthenticated.current = authenticated;
+
+    if (!authenticated && (wasAuthenticated === true || wasAuthenticated === null)) {
+      setUserEditorOpen(true);
+      setAuthMode('signIn');
+    }
+  }, [authenticated]);
 
   function mutateSettings(updater: (current: GroundStationUserSettings) => GroundStationUserSettings) {
     onDraftChange(updater(cloneSettings(settingsDraft)));
@@ -341,6 +354,8 @@ export function UserSettingsPanel({
         password: nextPassword,
         create: false,
       });
+      setAuthMode('session');
+      setUserEditorOpen(false);
     } finally {
       setPassword('');
     }
@@ -361,6 +376,7 @@ export function UserSettingsPanel({
     });
 
     if (success) {
+      setAuthMode('signIn');
       setUserEditorOpen(true);
       setUsername(nextUsername);
       setPassword('');
@@ -788,27 +804,31 @@ export function UserSettingsPanel({
                       <p className="hint">Use an existing account to load stored settings.</p>
                     </div>
                   </div>
-                  <label className="field">
-                    <span>Username</span>
-                    <input
-                      ref={userNameInputRef}
-                      value={username}
-                      onChange={(event) => setUsername(event.target.value)}
-                      autoComplete="username"
-                      spellCheck={false}
-                      placeholder="pilot"
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Password</span>
-                    <input
-                      type="password"
-                      value={password}
-                      onChange={(event) => setPassword(event.target.value)}
-                      autoComplete="current-password"
-                      spellCheck={false}
-                    />
-                  </label>
+                  {authMode === 'signIn' ? (
+                    <>
+                      <label className="field">
+                        <span>Username</span>
+                        <input
+                          ref={userNameInputRef}
+                          value={username}
+                          onChange={(event) => setUsername(event.target.value)}
+                          autoComplete="username"
+                          spellCheck={false}
+                          placeholder="pilot"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Password</span>
+                        <input
+                          type="password"
+                          value={password}
+                          onChange={(event) => setPassword(event.target.value)}
+                          autoComplete="current-password"
+                          spellCheck={false}
+                        />
+                      </label>
+                    </>
+                  ) : null}
                 </section>
               ) : (
                 <section className="auth-card">
@@ -825,7 +845,7 @@ export function UserSettingsPanel({
                   </div>
                 </section>
               )}
-              {!authenticated ? (
+              {!authenticated && authMode === 'create' ? (
                 <section className="auth-card auth-card-accent">
                   <div className="auth-card-head">
                     <div>
@@ -885,17 +905,33 @@ export function UserSettingsPanel({
               <div className="settings-actions">
                 {!authenticated ? (
                   <>
-                    <button type="button" className="secondary-button" onClick={handleSignIn} disabled={loading}>
-                      Sign in
-                    </button>
-                    <button type="button" className="ghost-button" onClick={handleCreateUser} disabled={loading}>
-                      {loading ? 'Creating...' : 'Create user'}
-                    </button>
+                    {authMode === 'signIn' ? (
+                      <>
+                        <button type="button" className="secondary-button" onClick={handleSignIn} disabled={loading}>
+                          Sign in
+                        </button>
+                        <button type="button" className="ghost-button" onClick={() => setAuthMode('create')} disabled={loading}>
+                          Create user
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" className="secondary-button" onClick={handleCreateUser} disabled={loading}>
+                          {loading ? 'Creating...' : 'Save user'}
+                        </button>
+                        <button type="button" className="ghost-button" onClick={() => setAuthMode('signIn')} disabled={loading}>
+                          Back to sign in
+                        </button>
+                      </>
+                    )}
                   </>
                 ) : (
                   <>
                     <button type="button" className="secondary-button" onClick={onSave} disabled={saving || loading}>
                       Save settings
+                    </button>
+                    <button type="button" className="ghost-button" onClick={onLogout} disabled={saving || loading}>
+                      Sign out
                     </button>
                   </>
                 )}
