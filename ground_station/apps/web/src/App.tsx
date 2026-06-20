@@ -5,7 +5,6 @@ import { FleetPanel } from './components/FleetPanel';
 import { FarmTimelinePanel } from './components/FarmTimelinePanel';
 import { FlightLogTimelinePanel } from './components/FlightLogTimelinePanel';
 import { FlightPathPlannerScreen } from './components/FlightPathPlannerScreen';
-import { MissionEditor } from './components/MissionEditor';
 import { ShellStatusPanel } from './components/ShellStatusPanel';
 import { SwarmConfigEditor } from './components/SwarmConfigEditor';
 import { TelemetryCharts } from './components/TelemetryCharts';
@@ -85,6 +84,7 @@ const DEFAULT_FLIGHT_PATH_PARAMETERS: FlightPathParameters = {
   auto_optimize: true,
   boundary_pass: 'after',
 };
+const EMPTY_BREADCRUMB: [] = [];
 
 type AppProps = {
   defaultCompanionBaseUrl?: string;
@@ -1133,8 +1133,8 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   );
   const breadcrumb = telemetryStream.samples;
   const coverageOverlay = useMemo(
-    () => [
-      ...surveyPreview.flatMap((segment, segmentIndex) =>
+    () =>
+      surveyPreview.flatMap((segment, segmentIndex) =>
         segment.map((point, pointIndex) => ({
           ...point,
           intensity: 0.08 + Math.min((segmentIndex + pointIndex) * 0.008, 0.14),
@@ -1142,15 +1142,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
           label: pointIndex === 0 ? 'planned pass' : undefined,
         })),
       ),
-      ...breadcrumb.slice(-40).map((sample, index) => ({
-        latitude: sample.location?.latitude ?? mapCenter[0],
-        longitude: sample.location?.longitude ?? mapCenter[1],
-        intensity: 0.1 + Math.min(index * 0.005, 0.16),
-        radius: 22 + (index % 3) * 3,
-        label: index === breadcrumb.length - 1 ? 'live track' : undefined,
-      })),
-    ],
-    [breadcrumb, mapCenter, surveyPreview],
+    [surveyPreview],
   );
   const aerialOverlay = useMemo(() => {
     if (!imageryOverlayUrl) {
@@ -1225,6 +1217,10 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     } else if (missionMode === 'waypoint') {
       addWaypoint(point);
     }
+  }
+
+  function openPlannerScreen() {
+    setScreen('planner');
   }
 
   function removeLastBoundaryPoint() {
@@ -2021,14 +2017,6 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
               A cockpit-style shell for the Pixhawk companion with a real map, live telemetry stream, and draft mission tools.
             </p>
           </div>
-          <div className="hero-actions">
-            <button className="primary-button" type="button" onClick={uploadRouteToCompanion}>
-              Upload mission
-            </button>
-            <button className="secondary-button" type="button" disabled={refreshing} onClick={saveRoute}>
-              {refreshing ? 'Syncing...' : 'Save route'}
-            </button>
-          </div>
         </header>
 
         <section className="dashboard-grid">
@@ -2045,6 +2033,9 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
                   tone={vehicle?.armed ? 'warn' : 'neutral'}
                 />
                 <StatusChip label="GeoTIFF" value={geotiffStatus} tone={imageryOverlayUrl ? 'good' : 'neutral'} />
+                <button type="button" className="secondary-button" onClick={openPlannerScreen}>
+                  Open mission editor
+                </button>
                 <button type="button" className="secondary-button" onClick={triggerGeoTiffPicker}>
                   Load GeoTIFF
                 </button>
@@ -2071,7 +2062,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
               center={mapCenter}
               boundary={boundaryDraft}
               waypoints={waypoints}
-              breadcrumb={breadcrumb}
+              breadcrumb={EMPTY_BREADCRUMB}
               surveyPreview={surveyPreview}
               coverage={coverageOverlay}
               vehicle={
@@ -2129,27 +2120,23 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         </section>
 
         {screen === 'cockpit' ? (
-          <>
-            <section className="bottom-grid">
-              <FleetPanel
-                drones={fleetMarkers}
-                activeDroneId={activeDroneId}
-                onSelectDrone={selectDraftActiveDrone}
-              />
-              <section className="summary-card">
-                <div className="panel-head">
-                  <div>
-                    <span className="panel-label">Planner</span>
-                    <h3>Flight path tools</h3>
-                  </div>
-                  <button type="button" className="secondary-button" onClick={() => setScreen('planner')}>
-                    Open planner
-                  </button>
+          <section className="bottom-grid">
+            <FleetPanel drones={fleetMarkers} activeDroneId={activeDroneId} onSelectDrone={selectDraftActiveDrone} />
+            <section className="summary-card">
+              <div className="panel-head">
+                <div>
+                  <span className="panel-label">Planner</span>
+                  <h3>Flight path tools</h3>
                 </div>
-                <p className="hint">Use the planner screen to draw boundaries, place obstacles, and generate a route.</p>
-              </section>
+                <button type="button" className="secondary-button" onClick={() => setScreen('planner')}>
+                  Open planner
+                </button>
+              </div>
+              <p className="hint">
+                Boundary and route editing now lives on the planner screen so the cockpit stays focused on telemetry and map tracking.
+              </p>
             </section>
-          </>
+          </section>
         ) : (
           <section className="bottom-grid">
             <FlightPathPlannerScreen
@@ -2172,7 +2159,6 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
               onSaveRoute={saveRoute}
               onSaveParameters={saveFlightPathParameters}
               onLoadBoundary={loadRouteFromCompanion}
-              onUploadRoute={uploadRouteToCompanion}
               routeStatus={routeMessage}
               missionHint="Draw or import a boundary, add obstacles, then auto-optimize the route."
               vehicle={
@@ -2190,6 +2176,8 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
               coverage={plannerCoverage}
               activeDroneId={activeDroneId}
               onSelectDrone={selectDraftActiveDrone}
+              onSaveMission={saveRoute}
+              onUploadMission={uploadRouteToCompanion}
             />
           </section>
         )}

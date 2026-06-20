@@ -27,7 +27,6 @@ type FlightPathPlannerScreenProps = {
   onSaveRoute: () => void;
   onSaveParameters: () => void;
   onLoadBoundary: () => void;
-  onUploadRoute: () => void;
   routeStatus: string;
   missionHint: string;
   vehicle?: LatLngPoint & { heading?: number };
@@ -36,6 +35,8 @@ type FlightPathPlannerScreenProps = {
   coverage: Array<LatLngPoint & { intensity?: number; radius?: number; label?: string }>;
   activeDroneId?: string;
   onSelectDrone?: (droneId: string) => void;
+  onSaveMission: () => void;
+  onUploadMission: () => void;
 };
 
 export function FlightPathPlannerScreen({
@@ -58,7 +59,6 @@ export function FlightPathPlannerScreen({
   onSaveRoute,
   onSaveParameters,
   onLoadBoundary,
-  onUploadRoute,
   routeStatus,
   missionHint,
   vehicle,
@@ -67,6 +67,8 @@ export function FlightPathPlannerScreen({
   coverage,
   activeDroneId,
   onSelectDrone,
+  onSaveMission,
+  onUploadMission,
 }: FlightPathPlannerScreenProps) {
   const selectedDrone = useMemo(
     () => fleet.drones.find((drone) => drone.drone_id === selectedDroneId) ?? fleet.drones[0],
@@ -103,13 +105,19 @@ export function FlightPathPlannerScreen({
               <button type="button" className="secondary-button" onClick={() => onModeChange('boundary')}>
                 Draw boundary
               </button>
-              <button type="button" className="secondary-button" onClick={() => onModeChange('waypoint')}>
-                Add obstacles
-              </button>
-              <button type="button" className="secondary-button" onClick={onGeneratePath}>
-                Auto-optimize
-              </button>
-            </div>
+            <button type="button" className="secondary-button" onClick={() => onModeChange('waypoint')}>
+              Add obstacles
+            </button>
+            <button type="button" className="secondary-button" onClick={onGeneratePath}>
+              Auto-optimize
+            </button>
+            <button type="button" className="primary-button" onClick={onSaveMission}>
+              Save mission
+            </button>
+            <button type="button" className="secondary-button" onClick={onUploadMission}>
+              Upload mission
+            </button>
+          </div>
           </div>
 
           <FieldMap
@@ -171,9 +179,8 @@ export function FlightPathPlannerScreen({
             <span>Enable Auto Optimization</span>
           </label>
           <div className="stack">
-            <button type="button" className="primary-button" onClick={onSaveRoute}>Save and Fly</button>
             <button type="button" className="secondary-button" onClick={onSaveParameters}>Save Parameters</button>
-            <button type="button" className="secondary-button" onClick={onUploadRoute}>Upload mission</button>
+            <button type="button" className="secondary-button" onClick={onSaveRoute}>Save and Fly</button>
           </div>
           <div className="list-card">
             <div className="list-row"><div><strong>Boundary</strong><span>{boundary.length} points</span></div></div>

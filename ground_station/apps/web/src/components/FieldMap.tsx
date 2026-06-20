@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { memo, useEffect, useMemo } from 'react';
 import { divIcon, type DivIconOptions, type LeafletMouseEvent, type LatLngExpression, type Marker as LeafletMarker } from 'leaflet';
 import {
   Circle,
@@ -101,6 +101,77 @@ function MapViewportSync({ center, followViewport }: { center: [number, number];
   return null;
 }
 
+const FleetMarkerLayer = memo(function FleetMarkerLayer({
+  fleet,
+  activeDroneId,
+  onSelectDrone,
+}: {
+  fleet: Array<DroneFleetEntry & { position?: LatLngPoint & { heading?: number } }>;
+  activeDroneId?: string;
+  onSelectDrone?: (droneId: string) => void;
+}) {
+  return (
+    <>
+      {fleet.map((drone) => {
+        const position = drone.position;
+        if (position?.latitude === undefined || position.longitude === undefined) {
+          return null;
+        }
+
+        const isActive = activeDroneId === drone.drone_id;
+        return (
+          <Marker
+            key={drone.drone_id}
+            position={toLatLngExpression(position)}
+            icon={createMarkerIcon('drone', drone.callsign ?? drone.drone_id, isActive)}
+            eventHandlers={
+              onSelectDrone
+                ? {
+                    click: () => onSelectDrone(drone.drone_id),
+                  }
+                : undefined
+            }
+          >
+            <Tooltip sticky>{drone.callsign ?? drone.drone_id}</Tooltip>
+          </Marker>
+        );
+      })}
+    </>
+  );
+});
+
+const VehicleLayer = memo(function VehicleLayer({
+  vehicle,
+}: {
+  vehicle?: LatLngPoint & { heading?: number };
+}) {
+  const vehicleHeading = typeof vehicle?.heading === 'number' ? vehicle.heading : undefined;
+
+  if (vehicle?.latitude === undefined || vehicle?.longitude === undefined) {
+    return null;
+  }
+
+  return (
+    <Pane name="vehicle-layer" style={{ zIndex: 460 }}>
+      <Marker position={toLatLngExpression(vehicle)} icon={createMarkerIcon('vehicle', 'AIR', true)}>
+        <Tooltip sticky>Aircraft</Tooltip>
+      </Marker>
+      {vehicleHeading !== undefined ? (
+        <Polyline
+          positions={[
+            [vehicle.latitude, vehicle.longitude],
+            [
+              vehicle.latitude + Math.cos((vehicleHeading * Math.PI) / 180) * 0.0018,
+              vehicle.longitude + Math.sin((vehicleHeading * Math.PI) / 180) * 0.0018,
+            ],
+          ]}
+          pathOptions={{ color: '#ff6d6d', weight: 4, opacity: 0.9 }}
+        />
+      ) : null}
+    </Pane>
+  );
+});
+
 function FieldMapInner({
   center,
   boundary,
@@ -135,8 +206,6 @@ function FieldMapInner({
       }, []),
     [breadcrumb],
   );
-
-  const vehicleHeading = typeof vehicle?.heading === 'number' ? vehicle.heading : undefined;
 
   return (
     <div className="field-map-shell">
@@ -297,50 +366,9 @@ function FieldMapInner({
           </Marker>
         ))}
 
-        {fleet.map((drone) => {
-          const position = drone.position;
-          if (position?.latitude === undefined || position.longitude === undefined) {
-            return null;
-          }
+        <FleetMarkerLayer fleet={fleet} activeDroneId={activeDroneId} onSelectDrone={onSelectDrone} />
 
-          const isActive = activeDroneId === drone.drone_id;
-          return (
-            <Marker
-              key={drone.drone_id}
-              position={toLatLngExpression(position)}
-              icon={createMarkerIcon('drone', drone.callsign ?? drone.drone_id, isActive)}
-              eventHandlers={
-                onSelectDrone
-                  ? {
-                      click: () => onSelectDrone(drone.drone_id),
-                    }
-                  : undefined
-              }
-            >
-              <Tooltip sticky>{drone.callsign ?? drone.drone_id}</Tooltip>
-            </Marker>
-          );
-        })}
-
-        {vehicle?.latitude !== undefined && vehicle?.longitude !== undefined ? (
-          <Pane name="vehicle-layer" style={{ zIndex: 460 }}>
-            <Marker position={toLatLngExpression(vehicle)} icon={createMarkerIcon('vehicle', 'AIR', true)}>
-              <Tooltip sticky>Aircraft</Tooltip>
-            </Marker>
-            {vehicleHeading !== undefined ? (
-              <Polyline
-                positions={[
-                  [vehicle.latitude, vehicle.longitude],
-                  [
-                    vehicle.latitude + Math.cos((vehicleHeading * Math.PI) / 180) * 0.0018,
-                    vehicle.longitude + Math.sin((vehicleHeading * Math.PI) / 180) * 0.0018,
-                  ],
-                ]}
-                pathOptions={{ color: '#ff6d6d', weight: 4, opacity: 0.9 }}
-              />
-            ) : null}
-          </Pane>
-        ) : null}
+        <VehicleLayer vehicle={vehicle} />
       </MapContainer>
 
       <div className="map-hud">
@@ -353,6 +381,28 @@ function FieldMapInner({
   );
 }
 
-export function FieldMap(props: FieldMapProps) {
-  return <FieldMapInner {...props} />;
+function areEqual(prev: FieldMapProps, next: FieldMapProps) {
+  return (
+    prev.center[0] === next.center[0] &&
+    prev.center[1] === next.center[1] &&
+    prev.boundary === next.boundary &&
+    prev.waypoints === next.waypoints &&
+    prev.breadcrumb === next.breadcrumb &&
+    prev.surveyPreview === next.surveyPreview &&
+    prev.vehicle === next.vehicle &&
+    prev.fleet === next.fleet &&
+    prev.coverage === next.coverage &&
+    prev.aerialOverlay === next.aerialOverlay &&
+    prev.mode === next.mode &&
+    prev.followViewport === next.followViewport &&
+    prev.onMapClick === next.onMapClick &&
+    prev.onBoundaryChange === next.onBoundaryChange &&
+    prev.onWaypointsChange === next.onWaypointsChange &&
+    prev.activeDroneId === next.activeDroneId &&
+    prev.onSelectDrone === next.onSelectDrone
+  );
 }
+
+export const FieldMap = memo(function FieldMap(props: FieldMapProps) {
+  return <FieldMapInner {...props} />;
+}, areEqual);
