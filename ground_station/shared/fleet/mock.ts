@@ -11,7 +11,7 @@ export const mockFleetConfig: FleetConfig = {
       transport: {
         type: 'http',
         endpoint: 'http://192.168.1.140:8000',
-        api_key: '',
+        api_key: 'ee3ba92d63dcc1b0f54605b9351f00bf16444383e1a8d4cd7cea8825aa8b8c38',
         control_token: '',
       },
       endpoints: ['http://192.168.1.140:8000', 'ws://192.168.1.140:8000/ws/telemetry'],
@@ -26,7 +26,7 @@ export const mockFleetConfig: FleetConfig = {
       transport: {
         type: 'udp',
         endpoint: 'udp://192.168.1.51:14550',
-        api_key: '',
+        api_key: 'ee3ba92d63dcc1b0f54605b9351f00bf16444383e1a8d4cd7cea8825aa8b8c38',
         control_token: '',
       },
       endpoints: ['udp://192.168.1.51:14550'],

@@ -540,6 +540,12 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     () => (userAuthenticated ? validateRequiredSettings(settingsDraft) : []),
     [settingsDraft, userAuthenticated],
   );
+  const companionPollingReady = Boolean(
+    userAuthenticated &&
+      companionBaseUrl &&
+      companionApiKey &&
+      requiredSettingsIssues.length === 0,
+  );
   const setupProfile =
     settingsDraft.profiles.find((profile) => profile.profile_id === settingsDraft.active_profile_id) ??
     settingsDraft.profiles[0];
@@ -628,7 +634,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     let cancelled = false;
 
     async function refresh() {
-      if (!userAuthenticated || !companionBaseUrl) {
+      if (!companionPollingReady) {
         setStatusSnapshot(mockSnapshot);
         setConnectionState('disconnected');
         setSourceLabel('mock data');
@@ -689,7 +695,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
     void refresh();
 
-    if (!userAuthenticated) {
+    if (!companionPollingReady) {
       return () => {
         cancelled = true;
       };
@@ -703,13 +709,13 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [companionApiKey, companionBaseUrl, telemetryRefreshIntervalMs, userAuthenticated]);
+  }, [companionApiKey, companionBaseUrl, companionPollingReady, telemetryRefreshIntervalMs, userAuthenticated]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function refreshTelemetry() {
-      if (!userAuthenticated || !telemetryBaseUrl) {
+      if (!companionPollingReady || !telemetryBaseUrl) {
         setTelemetrySnapshot(mockSnapshot.telemetry);
         return;
       }
@@ -727,7 +733,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     }
 
     void refreshTelemetry();
-    if (!userAuthenticated) {
+    if (!companionPollingReady) {
       return () => {
         cancelled = true;
       };
@@ -741,7 +747,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [companionApiKey, telemetryBaseUrl, telemetryRefreshIntervalMs, userAuthenticated]);
+  }, [companionApiKey, companionPollingReady, telemetryBaseUrl, telemetryRefreshIntervalMs, userAuthenticated]);
 
   useEffect(() => {
     saveStoredDraft(routeStorageKey, routeDraft);
