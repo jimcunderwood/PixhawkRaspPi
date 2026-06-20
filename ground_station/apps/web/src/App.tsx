@@ -477,6 +477,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const [sourceLabel, setSourceLabel] = useState('mock data');
   const [refreshing, setRefreshing] = useState(true);
   const [missionMode, setMissionMode] = useState<MissionEditorMode>('view');
+  const [screen, setScreen] = useState<'cockpit' | 'planner'>('cockpit');
   const [routeDraft, setRouteDraft] = useState(() =>
     loadStoredDraft(routeStorageKey) ?? createMissionRouteDraft('Draft route'),
   );
@@ -1045,8 +1046,8 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     statusSnapshot.telemetry ?? mockSnapshot.telemetry,
   );
   const telemetry = telemetryStream.latest ?? telemetrySnapshot ?? statusSnapshot.telemetry ?? mockSnapshot.telemetry;
-  const liveVehicle = telemetryToVehicle(telemetryStream.latest);
-  const vehicle = liveVehicle ?? statusSnapshot.vehicle ?? mockSnapshot.vehicle;
+  const liveVehicle = telemetryToVehicle(telemetryStream.latest ?? telemetrySnapshot);
+  const vehicle = liveVehicle ?? telemetryToVehicle(statusSnapshot.telemetry ?? mockSnapshot.telemetry) ?? statusSnapshot.vehicle ?? mockSnapshot.vehicle;
   const readiness = statusSnapshot.readiness ?? mockSnapshot.readiness;
   const safety = statusSnapshot.safety ?? mockSnapshot.safety;
   const mission = statusSnapshot.mission ?? mockSnapshot.mission;
@@ -1106,19 +1107,20 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       return boundaryCenterPoint;
     }
 
-    return vehicle?.location
-      ? {
-          latitude: vehicle.location.latitude ?? 40.1123,
-          longitude: vehicle.location.longitude ?? -74.2129,
-          altitude: vehicle.location.altitude,
-        }
-      : { latitude: 40.1123, longitude: -74.2129 };
-  }, [boundaryDraft, vehicle?.location]);
+    if (vehicle?.location?.latitude !== undefined && vehicle.location.longitude !== undefined) {
+      return {
+        latitude: vehicle.location.latitude,
+        longitude: vehicle.location.longitude,
+        altitude: vehicle.location.altitude,
+      };
+    }
 
-  const mapCenter: [number, number] =
-    missionMode === 'view' && vehicle?.location?.latitude !== undefined && vehicle.location.longitude !== undefined
-      ? [vehicle.location.latitude, vehicle.location.longitude]
-      : [boundaryCenter.latitude, boundaryCenter.longitude];
+    return { latitude: 40.1123, longitude: -74.2129 };
+  }, [boundaryDraft, vehicle?.location]);
+  const [mapCenter, setMapCenter] = useState<[number, number]>(() => [boundaryCenter.latitude, boundaryCenter.longitude]);
+  useEffect(() => {
+    setMapCenter([boundaryCenter.latitude, boundaryCenter.longitude]);
+  }, [boundaryCenter.latitude, boundaryCenter.longitude, routeDraft.name]);
   const surveyPreview = useMemo(() => buildSurveyPreview(boundaryDraft), [boundaryDraft]);
   const plannerCoverage = useMemo(
     () =>
@@ -2085,7 +2087,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
               aerialOverlay={aerialOverlay}
               fleet={fleetMarkers}
               mode={missionMode}
-              followViewport={missionMode === 'view'}
+              followViewport={false}
               onMapClick={handleMapClick}
               onBoundaryChange={setBoundaryPoints}
               onWaypointsChange={setWaypointPoints}
@@ -2126,53 +2128,71 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
           </div>
         </section>
 
-        <section className="bottom-grid">
-          <FlightPathPlannerScreen
-            fleet={fleetConfig}
-            selectedDroneId={activeDroneId}
-            onSelectedDroneChange={selectDraftActiveDrone}
-            boundary={boundaryDraft}
-            waypoints={waypoints}
-            obstacles={plannerObstacles}
-            parameters={flightPathParameters}
-            routeName={routeDraft.name}
-            mode={plannerMode}
-            onModeChange={setPlannerMode}
-            onBoundaryChange={setBoundaryPoints}
-            onWaypointsChange={setWaypointPoints}
-            onObstaclesChange={setPlannerObstacles}
-            onRouteNameChange={(name) => setRouteDraft((current) => ({ ...current, name, updated_at: new Date().toISOString() }))}
-            onParametersChange={setFlightPathParameters}
-            onGeneratePath={generateFlightPath}
-            onSaveRoute={saveRoute}
-            onSaveParameters={saveFlightPathParameters}
-            onLoadBoundary={loadRouteFromCompanion}
-            onUploadRoute={uploadRouteToCompanion}
-            routeStatus={routeMessage}
-            missionHint="Draw or import a boundary, add obstacles, then auto-optimize the route."
-            vehicle={
-              telemetry?.location?.latitude !== undefined && telemetry.location.longitude !== undefined
-                ? {
-                    latitude: telemetry.location.latitude,
-                    longitude: telemetry.location.longitude,
-                    altitude: telemetry.location.altitude,
-                    heading: telemetry.heading,
-                  }
-                : undefined
-            }
-            breadcrumb={telemetryStream.samples as any}
-            surveyPreview={surveyPreview}
-            coverage={plannerCoverage}
-            activeDroneId={activeDroneId}
-            onSelectDrone={selectDraftActiveDrone}
-          />
-
-          <FleetPanel
-            drones={fleetMarkers}
-            activeDroneId={activeDroneId}
-            onSelectDrone={selectDraftActiveDrone}
-          />
-        </section>
+        {screen === 'cockpit' ? (
+          <>
+            <section className="bottom-grid">
+              <FleetPanel
+                drones={fleetMarkers}
+                activeDroneId={activeDroneId}
+                onSelectDrone={selectDraftActiveDrone}
+              />
+              <section className="summary-card">
+                <div className="panel-head">
+                  <div>
+                    <span className="panel-label">Planner</span>
+                    <h3>Flight path tools</h3>
+                  </div>
+                  <button type="button" className="secondary-button" onClick={() => setScreen('planner')}>
+                    Open planner
+                  </button>
+                </div>
+                <p className="hint">Use the planner screen to draw boundaries, place obstacles, and generate a route.</p>
+              </section>
+            </section>
+          </>
+        ) : (
+          <section className="bottom-grid">
+            <FlightPathPlannerScreen
+              fleet={fleetConfig}
+              selectedDroneId={activeDroneId}
+              onSelectedDroneChange={selectDraftActiveDrone}
+              boundary={boundaryDraft}
+              waypoints={waypoints}
+              obstacles={plannerObstacles}
+              parameters={flightPathParameters}
+              routeName={routeDraft.name}
+              mode={plannerMode}
+              onModeChange={setPlannerMode}
+              onBoundaryChange={setBoundaryPoints}
+              onWaypointsChange={setWaypointPoints}
+              onObstaclesChange={setPlannerObstacles}
+              onRouteNameChange={(name) => setRouteDraft((current) => ({ ...current, name, updated_at: new Date().toISOString() }))}
+              onParametersChange={setFlightPathParameters}
+              onGeneratePath={generateFlightPath}
+              onSaveRoute={saveRoute}
+              onSaveParameters={saveFlightPathParameters}
+              onLoadBoundary={loadRouteFromCompanion}
+              onUploadRoute={uploadRouteToCompanion}
+              routeStatus={routeMessage}
+              missionHint="Draw or import a boundary, add obstacles, then auto-optimize the route."
+              vehicle={
+                telemetry?.location?.latitude !== undefined && telemetry.location.longitude !== undefined
+                  ? {
+                      latitude: telemetry.location.latitude,
+                      longitude: telemetry.location.longitude,
+                      altitude: telemetry.location.altitude,
+                      heading: telemetry.heading,
+                    }
+                  : undefined
+              }
+              breadcrumb={telemetryStream.samples as any}
+              surveyPreview={surveyPreview}
+              coverage={plannerCoverage}
+              activeDroneId={activeDroneId}
+              onSelectDrone={selectDraftActiveDrone}
+            />
+          </section>
+        )}
 
         <section className="bottom-grid">
           <section className="summary-card">
