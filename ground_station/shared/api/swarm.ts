@@ -39,8 +39,6 @@ function addApiKeyToUrl(url: string, apiKey?: string): string {
 async function requestJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await fetch(addApiKeyToUrl(buildUrl(options.baseUrl, path), options.apiKey), {
     headers: {
-      'content-type': 'application/json',
-      ...(options.apiKey ? { 'x-api-key': options.apiKey } : {}),
       ...(options.controlToken ? { 'x-control-token': options.controlToken } : {}),
     },
   });

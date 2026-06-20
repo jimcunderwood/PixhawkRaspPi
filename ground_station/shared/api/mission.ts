@@ -44,8 +44,6 @@ async function requestJson<T>(path: string, options: RequestOptions = {}): Promi
   const response = await fetch(addApiKeyToUrl(buildUrl(options.baseUrl, path), options.apiKey), {
     method: 'GET',
     headers: {
-      'content-type': 'application/json',
-      ...(options.apiKey ? { 'x-api-key': options.apiKey } : {}),
       ...(options.controlToken ? { 'x-control-token': options.controlToken } : {}),
     },
   });

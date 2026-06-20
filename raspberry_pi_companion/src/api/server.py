@@ -1164,7 +1164,7 @@ class ServerAPI:
         api_key: Optional[str] = Security(api_key_header),
     ):
         """Validate the shared API key for control endpoints."""
-        return self._require_api_key_value(api_key, request=request)
+        return self._require_api_key_value(api_key or request.query_params.get("api_key"), request=request)
 
     def _require_api_key_header_or_query(
         self,

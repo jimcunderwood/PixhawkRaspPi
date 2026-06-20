@@ -116,7 +116,6 @@ async function requestJson<T>(
 ): Promise<T> {
   const response = await fetch(addApiKeyToUrl(buildUrl(options.baseUrl, path), options.apiKey), {
     headers: {
-      ...(options.apiKey ? { 'x-api-key': options.apiKey } : {}),
       ...(options.controlToken ? { 'x-control-token': options.controlToken } : {}),
     },
   });
@@ -138,7 +137,6 @@ async function requestBlob(
     method,
     headers: {
       ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(options.apiKey ? { 'x-api-key': options.apiKey } : {}),
       ...(options.controlToken ? { 'x-control-token': options.controlToken } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -162,7 +160,6 @@ async function requestJsonWithBody<T>(
     method,
     headers: {
       ...headers,
-      ...(options.apiKey ? { 'x-api-key': options.apiKey } : {}),
       ...(options.controlToken ? { 'x-control-token': options.controlToken } : {}),
     },
     body,
