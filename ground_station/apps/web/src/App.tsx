@@ -882,6 +882,10 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         active.fleet.drones.find((drone) => drone.drone_id === active.selected_drone_id) ??
         active.fleet.drones[0];
 
+      if (!active || !activeDrone) {
+        return prepared;
+      }
+
       return {
         ...prepared,
         active_profile_id: active.profile_id,
@@ -905,7 +909,10 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
           return {
             ...profile,
-            selected_drone_id: selectedDroneId || drones[0]?.drone_id,
+            selected_drone_id:
+              selectedDroneId && drones.some((drone) => drone.drone_id === selectedDroneId)
+                ? selectedDroneId
+                : drones[0]?.drone_id,
             fleet: {
               ...profile.fleet,
               default_transport: drones[0]?.transport.type ?? profile.fleet.default_transport,
