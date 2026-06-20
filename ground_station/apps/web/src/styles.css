@@ -227,11 +227,11 @@ button {
 }
 
 .settings-modal {
-  width: min(420px, 100%);
+  width: min(900px, 100%);
   display: grid;
   gap: 16px;
-  max-height: calc(100vh - 48px);
-  overflow: auto;
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
   padding: 18px;
   border-radius: 18px;
   background: var(--panel-strong);
@@ -240,7 +240,33 @@ button {
 }
 
 .setup-modal {
-  width: min(760px, 100%);
+  width: min(980px, 100%);
+  max-height: calc(100vh - 32px);
+}
+
+.setup-modal .stack {
+  overflow: visible;
+}
+
+.auth-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(4, 9, 16, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.auth-card-accent {
+  background: linear-gradient(180deg, rgba(255, 176, 0, 0.08), rgba(4, 9, 16, 0.58));
+  border-color: rgba(255, 176, 0, 0.18);
+}
+
+.auth-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
 }
 
 .settings-modal-head {

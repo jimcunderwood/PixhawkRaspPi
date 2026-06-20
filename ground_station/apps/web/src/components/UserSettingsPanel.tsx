@@ -107,6 +107,8 @@ export function UserSettingsPanel({
   const [createPassword, setCreatePassword] = useState('');
   const [createDisplayName, setCreateDisplayName] = useState('');
   const [createBootstrapApiKey, setCreateBootstrapApiKey] = useState('');
+  const [signInCardOpen, setSignInCardOpen] = useState(true);
+  const [createCardOpen, setCreateCardOpen] = useState(true);
   const [droneEditorOpen, setDroneEditorOpen] = useState(false);
   const [editingDroneId, setEditingDroneId] = useState<string | undefined>();
   const droneIdInputRef = useRef<HTMLInputElement | null>(null);
@@ -150,6 +152,17 @@ export function UserSettingsPanel({
       autoOpenedLoginPrompt.current = true;
       setUserEditorOpen(true);
     }
+  }, [authenticated, hasUsers]);
+
+  useEffect(() => {
+    if (authenticated) {
+      setSignInCardOpen(false);
+      setCreateCardOpen(false);
+      return;
+    }
+
+    setSignInCardOpen(true);
+    setCreateCardOpen(!hasUsers);
   }, [authenticated, hasUsers]);
 
   function mutateSettings(updater: (current: GroundStationUserSettings) => GroundStationUserSettings) {
@@ -333,11 +346,17 @@ export function UserSettingsPanel({
   }
 
   async function handleSignIn() {
-    await onLogin({
-      username,
-      password,
-      create: false,
-    });
+    const nextUsername = username.trim();
+    const nextPassword = password;
+    try {
+      await onLogin({
+        username: nextUsername,
+        password: nextPassword,
+        create: false,
+      });
+    } finally {
+      setPassword('');
+    }
   }
 
   async function handleCreateUser() {
@@ -355,7 +374,7 @@ export function UserSettingsPanel({
     });
 
     if (success) {
-      setUserEditorOpen(false);
+      setUserEditorOpen(true);
       setUsername(nextUsername);
       setPassword('');
       setCreateUsername('');
@@ -774,51 +793,121 @@ export function UserSettingsPanel({
                     : 'No users exist yet. Create the first user to start using the app. You will need the API key from the .env file.'}
                 </p>
               )}
-              <label className="field">
-                <span>Username</span>
-                <input
-                  ref={userNameInputRef}
-                  value={authenticated ? username : createUsername}
-                  onChange={(event) => (authenticated ? setUsername(event.target.value) : setCreateUsername(event.target.value))}
-                  autoComplete="username"
-                  spellCheck={false}
-                  placeholder="pilot"
-                />
-              </label>
-              <label className="field">
-                <span>Password</span>
-                <input
-                  type="password"
-                  value={authenticated ? password : createPassword}
-                  onChange={(event) => (authenticated ? setPassword(event.target.value) : setCreatePassword(event.target.value))}
-                  autoComplete={authenticated ? 'current-password' : 'new-password'}
-                  spellCheck={false}
-                />
-              </label>
               {!authenticated ? (
-                <label className="field">
-                  <span>Display name</span>
-                  <input
-                    value={createDisplayName}
-                    onChange={(event) => setCreateDisplayName(event.target.value)}
-                    autoComplete="name"
-                    spellCheck={false}
-                    placeholder="Pilot"
-                  />
-                </label>
-              ) : null}
-              {!authenticated && !hasUsers ? (
-                <label className="field">
-                  <span>Bootstrap API key</span>
-                  <input
-                    type="password"
-                    value={createBootstrapApiKey}
-                    onChange={(event) => setCreateBootstrapApiKey(event.target.value)}
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder="API_KEY from .env"
-                  />
-                </label>
+                <section className="auth-card">
+                  <div className="auth-card-head">
+                    <div>
+                      <span className="metric-title">Sign In</span>
+                      <p className="hint">Use an existing account to load stored settings.</p>
+                    </div>
+                    <button type="button" className="ghost-button" onClick={() => setSignInCardOpen((current) => !current)}>
+                      {signInCardOpen ? 'Collapse' : 'Expand'}
+                    </button>
+                  </div>
+                  {signInCardOpen ? (
+                    <>
+                      <label className="field">
+                        <span>Username</span>
+                        <input
+                          ref={userNameInputRef}
+                          value={username}
+                          onChange={(event) => setUsername(event.target.value)}
+                          autoComplete="username"
+                          spellCheck={false}
+                          placeholder="pilot"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Password</span>
+                        <input
+                          type="password"
+                          value={password}
+                          onChange={(event) => setPassword(event.target.value)}
+                          autoComplete="current-password"
+                          spellCheck={false}
+                        />
+                      </label>
+                    </>
+                  ) : null}
+                </section>
+              ) : (
+                <section className="auth-card">
+                  <div className="auth-card-head">
+                    <div>
+                      <span className="metric-title">Session</span>
+                      <p className="hint">You are signed in. Use logout to switch accounts.</p>
+                    </div>
+                  </div>
+                  <div className="settings-actions">
+                    <button type="button" className="ghost-button" onClick={onLogout} disabled={saving || loading}>
+                      Sign out
+                    </button>
+                  </div>
+                </section>
+              )}
+              {!authenticated ? (
+                <section className="auth-card auth-card-accent">
+                  <div className="auth-card-head">
+                    <div>
+                      <span className="metric-title">Create User</span>
+                      <p className="hint">
+                        {hasUsers
+                          ? 'Create an additional account.'
+                          : 'Create the first user to unlock the app. The bootstrap API key is required once.'}
+                      </p>
+                    </div>
+                    <button type="button" className="ghost-button" onClick={() => setCreateCardOpen((current) => !current)}>
+                      {createCardOpen ? 'Collapse' : 'Expand'}
+                    </button>
+                  </div>
+                  {createCardOpen ? (
+                    <>
+                      <label className="field">
+                        <span>New username</span>
+                        <input
+                          value={createUsername}
+                          onChange={(event) => setCreateUsername(event.target.value)}
+                          autoComplete="username"
+                          spellCheck={false}
+                          placeholder="pilot"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>New password</span>
+                        <input
+                          type="password"
+                          value={createPassword}
+                          onChange={(event) => setCreatePassword(event.target.value)}
+                          autoComplete="new-password"
+                          spellCheck={false}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Display name</span>
+                        <input
+                          value={createDisplayName}
+                          onChange={(event) => setCreateDisplayName(event.target.value)}
+                          autoComplete="name"
+                          spellCheck={false}
+                          placeholder="Pilot"
+                        />
+                      </label>
+                      {!hasUsers ? (
+                        <label className="field">
+                          <span>Bootstrap API key</span>
+                          <input
+                            type="password"
+                            value={createBootstrapApiKey}
+                            onChange={(event) => setCreateBootstrapApiKey(event.target.value)}
+                            autoComplete="off"
+                            spellCheck={false}
+                            placeholder="API_KEY from .env"
+                          />
+                        </label>
+                      ) : null}
+                    </>
+                  ) : null}
+                </section>
               ) : null}
               <div className="settings-actions">
                 {!authenticated ? (
@@ -834,9 +923,6 @@ export function UserSettingsPanel({
                   <>
                     <button type="button" className="secondary-button" onClick={onSave} disabled={saving || loading}>
                       Save settings
-                    </button>
-                    <button type="button" className="ghost-button" onClick={onLogout} disabled={saving || loading}>
-                      Sign out
                     </button>
                   </>
                 )}
