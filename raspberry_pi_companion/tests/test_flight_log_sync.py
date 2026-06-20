@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.api.server import FlightLogReplayRequest
 from src.logsync.manager import FlightLogSyncManager
 
 
@@ -154,6 +153,7 @@ def test_flight_log_sync_uses_free_space_budget_and_cleans_bundle_dir(tmp_path, 
         return SimpleNamespace(total=1000, used=900, free=100)
 
     monkeypatch.setattr("src.logsync.manager.shutil.disk_usage", fake_disk_usage)
+    monkeypatch.setattr(manager, "_directory_size_bytes", lambda: 40)
 
     result = manager.sync_now(reason="manual")
 
@@ -230,7 +230,7 @@ async def test_log_sync_routes_surface_history_and_replay(async_server_api):
     status = await next(route.endpoint for route in app.routes if getattr(route, "path", None) == "/api/log-sync/status")()
     history = await next(route.endpoint for route in app.routes if getattr(route, "path", None) == "/api/log-sync/history")()
     replay = await next(route.endpoint for route in app.routes if getattr(route, "path", None) == "/api/log-sync/replay")(
-        FlightLogReplayRequest(archive_path="/var/lib/drone-companion/flight-logs/flight_guided/20240618T170000Z.zip"),
+        SimpleNamespace(archive_path="/var/lib/drone-companion/flight-logs/flight_guided/20240618T170000Z.zip"),
         x_control_token=command_token,
     )
 
