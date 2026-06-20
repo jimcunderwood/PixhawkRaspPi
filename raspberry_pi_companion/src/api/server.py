@@ -5013,6 +5013,8 @@ class ServerAPI:
             dependencies=protected,
         )
         async def get_log_sync_history(limit: int = Query(10, ge=1, le=50)):
+            if hasattr(limit, "default"):
+                limit = int(limit.default)
             return StatusResponse(
                 status="success",
                 message="Flight log sync history retrieved",
@@ -5027,7 +5029,14 @@ class ServerAPI:
         )
         async def replay_log_sync(request: FlightLogReplayRequest, x_control_token: Optional[str] = Header(None)):
             action = "flight_log_sync.replay"
-            parameters = request.model_dump(mode="json")
+            parameters = (
+                request.model_dump(mode="json")
+                if hasattr(request, "model_dump")
+                else {
+                    "archive_path": getattr(request, "archive_path", None),
+                    "upload": getattr(request, "upload", False),
+                }
+            )
             try:
                 self._require_command_authority(x_control_token, MAINTENANCE_ROLES)
                 if not self.flight_log_sync_manager:
