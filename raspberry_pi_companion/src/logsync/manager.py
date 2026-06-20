@@ -152,9 +152,13 @@ class FlightLogSyncManager:
         companion_files = self._collect_companion_artifacts(companion_dir)
         manifest = self._write_manifest(bundle_dir, session_name, reason, pixhawk_files, companion_files)
         archive_path = self._create_archive(bundle_dir, manifest)
-        upload_result = self._upload_archive(archive_path, manifest)
-        self._enforce_storage_budget()
-        self._prune_session_archives(bundle_dir.parent)
+        upload_result = {"enabled": False}
+        try:
+            upload_result = self._upload_archive(archive_path, manifest)
+        finally:
+            self._cleanup_bundle_dir(bundle_dir)
+            self._enforce_storage_budget()
+            self._prune_session_archives(bundle_dir.parent)
 
         return {
             "status": "success",
@@ -461,7 +465,7 @@ class FlightLogSyncManager:
             logger.warning("Unable to determine flight log disk usage: %s", str(e))
             return
 
-        budget_bytes = int(usage.total * max_fraction)
+        budget_bytes = int(usage.free * max_fraction)
         current_bytes = self._directory_size_bytes()
         if current_bytes <= budget_bytes:
             return
@@ -490,3 +494,11 @@ class FlightLogSyncManager:
                 current = current.parent
             except OSError:
                 return
+
+    def _cleanup_bundle_dir(self, bundle_dir: Path):
+        try:
+            if bundle_dir.exists():
+                shutil.rmtree(bundle_dir)
+                self._cleanup_empty_parents(bundle_dir.parent)
+        except OSError as e:
+            logger.warning("Failed to remove flight log bundle directory %s: %s", bundle_dir, str(e))

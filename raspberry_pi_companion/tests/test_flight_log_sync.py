@@ -121,6 +121,54 @@ def test_flight_log_sync_enforces_storage_budget_oldest_first(tmp_path, monkeypa
     assert archive_new.exists()
 
 
+def test_flight_log_sync_uses_free_space_budget_and_cleans_bundle_dir(tmp_path, monkeypatch):
+    manager = make_manager(tmp_path)
+    manager.base_directory.mkdir(parents=True, exist_ok=True)
+
+    bundle_paths = {}
+
+    def fake_download(target_directory):
+        path = target_directory / "pixhawk.bin"
+        path.write_bytes(b"abc")
+        bundle_paths["bundle_dir"] = target_directory.parent
+        return [path]
+
+    def fake_collect(target_directory):
+        path = target_directory / "telemetry.json"
+        path.write_text("{}")
+        return [path]
+
+    def fake_upload(archive_path, manifest_path):
+        bundle_paths["archive_path"] = archive_path
+        bundle_paths["manifest_path"] = manifest_path
+        return {"enabled": True, "status": "uploaded"}
+
+    monkeypatch.setattr(manager, "_download_pixhawk_logs", fake_download)
+    monkeypatch.setattr(manager, "_collect_companion_artifacts", fake_collect)
+    monkeypatch.setattr(manager, "_upload_archive", fake_upload)
+
+    disk_usage_calls = {}
+
+    def fake_disk_usage(path):
+        disk_usage_calls["path"] = path
+        return SimpleNamespace(total=1000, used=900, free=100)
+
+    monkeypatch.setattr("src.logsync.manager.shutil.disk_usage", fake_disk_usage)
+
+    result = manager.sync_now(reason="manual")
+
+    bundle_dir = Path(result["bundle_directory"])
+    archive_path = Path(result["archive_path"])
+
+    assert result["status"] == "success"
+    assert result["upload"]["status"] == "uploaded"
+    assert not bundle_dir.exists()
+    assert archive_path.exists()
+    assert disk_usage_calls["path"] == manager.base_directory
+    assert bundle_paths["archive_path"] == archive_path
+    assert bundle_paths["manifest_path"].name == "manifest.json"
+
+
 def test_flight_log_sync_download_latest_archive(tmp_path):
     manager = make_manager(tmp_path)
     archive_a = make_archive(manager.base_directory, "flight_guided", "20240618T160000Z", "landing")
