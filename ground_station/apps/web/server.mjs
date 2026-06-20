@@ -599,10 +599,25 @@ export async function startGroundStationServer({
         }
 
         if (Boolean(body.create)) {
+          const hasUsers = store.getUserCount() > 0;
+          if (!hasUsers) {
+            const bootstrapApiKey = typeof body.bootstrap_api_key === 'string' ? body.bootstrap_api_key.trim() : '';
+            if (!bootstrapApiKey || bootstrapApiKey !== defaultApiKey) {
+              jsonResponse(response, 403, { message: 'bootstrap API key required to create the first user' });
+              return;
+            }
+          }
+
+          const displayName =
+            typeof body.display_name === 'string'
+              ? body.display_name.trim()
+              : typeof body.displayName === 'string'
+                ? body.displayName.trim()
+                : undefined;
           const createdState = store.createAccount({
             username,
             password: body.password,
-            displayName: typeof body.display_name === 'string' ? body.display_name.trim() : undefined,
+            displayName,
           });
 
           if (!createdState) {

@@ -51,6 +51,7 @@ export type GroundStationLoginRequest = {
   password: string;
   display_name?: string;
   create?: boolean;
+  bootstrap_api_key?: string;
 };
 
 function withDefaultApiKey(fleet: FleetConfig, apiKey?: string): FleetConfig {

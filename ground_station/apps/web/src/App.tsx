@@ -577,7 +577,11 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         if (!session?.authenticated || !session.user) {
           setSessionState(session ?? { authenticated: false, has_users: false });
           setSettingsDraft(emptyUserSettings);
-          setSettingsMessage('Sign in with the admin user to load stored settings.');
+          setSettingsMessage(
+            session?.has_users
+              ? 'Sign in to load stored settings.'
+              : 'No users exist yet. Create the first user to continue.',
+          );
           return;
         }
 

@@ -106,10 +106,12 @@ export function UserSettingsPanel({
   const [createUsername, setCreateUsername] = useState('');
   const [createPassword, setCreatePassword] = useState('');
   const [createDisplayName, setCreateDisplayName] = useState('');
+  const [createBootstrapApiKey, setCreateBootstrapApiKey] = useState('');
   const [droneEditorOpen, setDroneEditorOpen] = useState(false);
   const [editingDroneId, setEditingDroneId] = useState<string | undefined>();
   const droneIdInputRef = useRef<HTMLInputElement | null>(null);
   const userNameInputRef = useRef<HTMLInputElement | null>(null);
+  const autoOpenedLoginPrompt = useRef(false);
 
   const activeProfileIndex = useMemo(() => {
     const exactIndex = settingsDraft.profiles.findIndex((profile) => profile.profile_id === settingsDraft.active_profile_id);
@@ -142,6 +144,13 @@ export function UserSettingsPanel({
       });
     }
   }, [userEditorOpen]);
+
+  useEffect(() => {
+    if (!autoOpenedLoginPrompt.current && !authenticated && !hasUsers) {
+      autoOpenedLoginPrompt.current = true;
+      setUserEditorOpen(true);
+    }
+  }, [authenticated, hasUsers]);
 
   function mutateSettings(updater: (current: GroundStationUserSettings) => GroundStationUserSettings) {
     onDraftChange(updater(cloneSettings(settingsDraft)));
@@ -333,11 +342,16 @@ export function UserSettingsPanel({
 
   async function handleCreateUser() {
     const nextUsername = createUsername.trim();
+    const nextPassword = createPassword;
+    if (!nextUsername || !nextPassword) {
+      return;
+    }
     const success = await onLogin({
       username: nextUsername,
-      password: createPassword,
-      display_name: createDisplayName || nextUsername,
+      password: nextPassword,
+      display_name: createDisplayName.trim() || nextUsername,
       create: true,
+      bootstrap_api_key: createBootstrapApiKey.trim(),
     });
 
     if (success) {
@@ -347,6 +361,7 @@ export function UserSettingsPanel({
       setCreateUsername('');
       setCreatePassword('');
       setCreateDisplayName('');
+      setCreateBootstrapApiKey('');
     }
   }
 
@@ -357,9 +372,6 @@ export function UserSettingsPanel({
           <span className="panel-label">User settings</span>
           <h3>{authenticated ? 'Stored profile access' : 'Sign in'}</h3>
         </div>
-        <button type="button" className="ghost-button" onClick={() => setUserEditorOpen(true)}>
-          User settings
-        </button>
       </div>
 
       {collapsed ? null : (
@@ -756,7 +768,11 @@ export function UserSettingsPanel({
                   </label>
                 </>
               ) : (
-                <p className="hint">Sign in to load your saved connection profiles.</p>
+                <p className="hint">
+                  {hasUsers
+                    ? 'Sign in to load your saved connection profiles.'
+                    : 'No users exist yet. Create the first user to start using the app. You will need the API key from the .env file.'}
+                </p>
               )}
               <label className="field">
                 <span>Username</span>
@@ -788,6 +804,19 @@ export function UserSettingsPanel({
                     autoComplete="name"
                     spellCheck={false}
                     placeholder="Pilot"
+                  />
+                </label>
+              ) : null}
+              {!authenticated && !hasUsers ? (
+                <label className="field">
+                  <span>Bootstrap API key</span>
+                  <input
+                    type="password"
+                    value={createBootstrapApiKey}
+                    onChange={(event) => setCreateBootstrapApiKey(event.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="API_KEY from .env"
                   />
                 </label>
               ) : null}
