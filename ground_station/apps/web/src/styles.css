@@ -221,38 +221,33 @@ button {
   z-index: 1000;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: 18px;
   background: rgba(3, 7, 13, 0.72);
   backdrop-filter: blur(10px);
 }
 
 .settings-modal {
-  width: min(900px, 100%);
+  width: min(1100px, calc(100vw - 36px));
   display: grid;
   gap: 16px;
-  max-height: calc(100vh - 32px);
-  overflow: hidden;
-  padding: 18px;
-  border-radius: 18px;
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  padding: 22px;
+  border-radius: 24px;
   background: var(--panel-strong);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
 }
 
 .setup-modal {
-  width: min(980px, 100%);
-  max-height: calc(100vh - 32px);
-}
-
-.setup-modal .stack {
-  overflow: visible;
+  width: min(1100px, calc(100vw - 36px));
 }
 
 .auth-card {
   display: grid;
   gap: 12px;
-  padding: 16px;
-  border-radius: 18px;
+  padding: 18px;
+  border-radius: 20px;
   background: rgba(4, 9, 16, 0.58);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
@@ -267,6 +262,10 @@ button {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+}
+
+.auth-card-head .ghost-button {
+  align-self: flex-start;
 }
 
 .settings-modal-head {

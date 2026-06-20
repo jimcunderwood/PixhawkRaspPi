@@ -107,8 +107,6 @@ export function UserSettingsPanel({
   const [createPassword, setCreatePassword] = useState('');
   const [createDisplayName, setCreateDisplayName] = useState('');
   const [createBootstrapApiKey, setCreateBootstrapApiKey] = useState('');
-  const [signInCardOpen, setSignInCardOpen] = useState(true);
-  const [createCardOpen, setCreateCardOpen] = useState(true);
   const [droneEditorOpen, setDroneEditorOpen] = useState(false);
   const [editingDroneId, setEditingDroneId] = useState<string | undefined>();
   const droneIdInputRef = useRef<HTMLInputElement | null>(null);
@@ -152,17 +150,6 @@ export function UserSettingsPanel({
       autoOpenedLoginPrompt.current = true;
       setUserEditorOpen(true);
     }
-  }, [authenticated, hasUsers]);
-
-  useEffect(() => {
-    if (authenticated) {
-      setSignInCardOpen(false);
-      setCreateCardOpen(false);
-      return;
-    }
-
-    setSignInCardOpen(true);
-    setCreateCardOpen(!hasUsers);
   }, [authenticated, hasUsers]);
 
   function mutateSettings(updater: (current: GroundStationUserSettings) => GroundStationUserSettings) {
@@ -800,35 +787,28 @@ export function UserSettingsPanel({
                       <span className="metric-title">Sign In</span>
                       <p className="hint">Use an existing account to load stored settings.</p>
                     </div>
-                    <button type="button" className="ghost-button" onClick={() => setSignInCardOpen((current) => !current)}>
-                      {signInCardOpen ? 'Collapse' : 'Expand'}
-                    </button>
                   </div>
-                  {signInCardOpen ? (
-                    <>
-                      <label className="field">
-                        <span>Username</span>
-                        <input
-                          ref={userNameInputRef}
-                          value={username}
-                          onChange={(event) => setUsername(event.target.value)}
-                          autoComplete="username"
-                          spellCheck={false}
-                          placeholder="pilot"
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Password</span>
-                        <input
-                          type="password"
-                          value={password}
-                          onChange={(event) => setPassword(event.target.value)}
-                          autoComplete="current-password"
-                          spellCheck={false}
-                        />
-                      </label>
-                    </>
-                  ) : null}
+                  <label className="field">
+                    <span>Username</span>
+                    <input
+                      ref={userNameInputRef}
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                      autoComplete="username"
+                      spellCheck={false}
+                      placeholder="pilot"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Password</span>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      autoComplete="current-password"
+                      spellCheck={false}
+                    />
+                  </label>
                 </section>
               ) : (
                 <section className="auth-card">
@@ -856,56 +836,49 @@ export function UserSettingsPanel({
                           : 'Create the first user to unlock the app. The bootstrap API key is required once.'}
                       </p>
                     </div>
-                    <button type="button" className="ghost-button" onClick={() => setCreateCardOpen((current) => !current)}>
-                      {createCardOpen ? 'Collapse' : 'Expand'}
-                    </button>
                   </div>
-                  {createCardOpen ? (
-                    <>
-                      <label className="field">
-                        <span>New username</span>
-                        <input
-                          value={createUsername}
-                          onChange={(event) => setCreateUsername(event.target.value)}
-                          autoComplete="username"
-                          spellCheck={false}
-                          placeholder="pilot"
-                        />
-                      </label>
-                      <label className="field">
-                        <span>New password</span>
-                        <input
-                          type="password"
-                          value={createPassword}
-                          onChange={(event) => setCreatePassword(event.target.value)}
-                          autoComplete="new-password"
-                          spellCheck={false}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Display name</span>
-                        <input
-                          value={createDisplayName}
-                          onChange={(event) => setCreateDisplayName(event.target.value)}
-                          autoComplete="name"
-                          spellCheck={false}
-                          placeholder="Pilot"
-                        />
-                      </label>
-                      {!hasUsers ? (
-                        <label className="field">
-                          <span>Bootstrap API key</span>
-                          <input
-                            type="password"
-                            value={createBootstrapApiKey}
-                            onChange={(event) => setCreateBootstrapApiKey(event.target.value)}
-                            autoComplete="off"
-                            spellCheck={false}
-                            placeholder="API_KEY from .env"
-                          />
-                        </label>
-                      ) : null}
-                    </>
+                  <label className="field">
+                    <span>New username</span>
+                    <input
+                      value={createUsername}
+                      onChange={(event) => setCreateUsername(event.target.value)}
+                      autoComplete="username"
+                      spellCheck={false}
+                      placeholder="pilot"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>New password</span>
+                    <input
+                      type="password"
+                      value={createPassword}
+                      onChange={(event) => setCreatePassword(event.target.value)}
+                      autoComplete="new-password"
+                      spellCheck={false}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Display name</span>
+                    <input
+                      value={createDisplayName}
+                      onChange={(event) => setCreateDisplayName(event.target.value)}
+                      autoComplete="name"
+                      spellCheck={false}
+                      placeholder="Pilot"
+                    />
+                  </label>
+                  {!hasUsers ? (
+                    <label className="field">
+                      <span>Bootstrap API key</span>
+                      <input
+                        type="password"
+                        value={createBootstrapApiKey}
+                        onChange={(event) => setCreateBootstrapApiKey(event.target.value)}
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder="API_KEY from .env"
+                      />
+                    </label>
                   ) : null}
                 </section>
               ) : null}
