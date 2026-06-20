@@ -75,19 +75,19 @@ function hashPassword(password, salt) {
 
 function buildTelemetryEndpoint(companionEndpoint) {
   try {
-    const url = new URL(companionEndpoint || 'http://192.168.1.50:8000');
+    const url = new URL(companionEndpoint || 'http://192.168.1.140:8000');
     url.protocol = url.protocol === 'https:' || url.protocol === 'wss:' ? 'wss:' : 'ws:';
     url.pathname = '/ws/telemetry';
     url.search = '';
     url.hash = '';
     return url.toString();
   } catch {
-    return 'ws://192.168.1.50:8000/ws/telemetry';
+    return 'ws://192.168.1.140:8000/ws/telemetry';
   }
 }
 
 function createDefaultSettings(userId, username, displayName, companionBaseUrl, apiKey = '') {
-  const companionEndpoint = companionBaseUrl || 'http://192.168.1.50:8000';
+  const companionEndpoint = companionBaseUrl || 'http://192.168.1.140:8000';
   const telemetryEndpoint = buildTelemetryEndpoint(companionEndpoint);
   const transportType = companionEndpoint.startsWith('ws') || companionEndpoint.startsWith('wss') ? 'websocket' : 'http';
 

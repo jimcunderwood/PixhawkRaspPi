@@ -51,7 +51,7 @@ reachable Companion:
 ```bash
 cd PixhawkRaspPi/ground_station/apps/web
 npm install
-export COMPANION_BASE_URL=http://192.168.1.50:8000
+export COMPANION_BASE_URL=http://192.168.1.140:8000
 npm run dev -- --host 0.0.0.0
 ```
 
@@ -87,7 +87,7 @@ Install Homebrew if needed, then:
 brew install git node
 cd PixhawkRaspPi/ground_station/apps/web
 npm install
-export COMPANION_BASE_URL=http://192.168.1.50:8000
+export COMPANION_BASE_URL=http://192.168.1.140:8000
 npm run dev -- --host 0.0.0.0
 ```
 
@@ -105,14 +105,14 @@ PowerShell window:
 ```powershell
 cd C:\path\to\PixhawkRaspPi\ground_station\apps\web
 npm install
-$env:COMPANION_BASE_URL = "http://192.168.1.50:8000"
+$env:COMPANION_BASE_URL = "http://192.168.1.140:8000"
 npm run dev -- --host 0.0.0.0
 ```
 
 If you prefer `cmd.exe`:
 
 ```cmd
-set COMPANION_BASE_URL=http://192.168.1.50:8000
+set COMPANION_BASE_URL=http://192.168.1.140:8000
 npm run dev -- --host 0.0.0.0
 ```
 
@@ -127,7 +127,7 @@ Node.js install.
 `COMPANION_BASE_URL` controls which companion host the UI talks to:
 
 - `http://localhost:8000` for a local companion
-- `http://192.168.1.50:8000` for a Pi on the LAN
+- `http://192.168.1.140:8000` for a Pi on the LAN
 - `http://10.0.0.12:8000` for a remote field network
 
 If `COMPANION_BASE_URL` is not set, the UI can still render the bundled mock
@@ -137,10 +137,10 @@ Use full URLs in both runtime configuration and per-drone settings:
 
 | Setting | Example URL | Where It Goes |
 | --- | --- | --- |
-| Companion REST/API base | `http://192.168.1.50:8000` | `COMPANION_BASE_URL` and the drone `Companion endpoint` field |
+| Companion REST/API base | `http://192.168.1.140:8000` | `COMPANION_BASE_URL` and the drone `Companion endpoint` field |
 | Local companion REST/API base | `http://localhost:8000` | Only when a separate Companion install is listening on the same machine |
-| Telemetry WebSocket | `ws://192.168.1.50:8000/ws/telemetry` | Drone alternate endpoints when you want an explicit telemetry URL |
-| Events WebSocket | `ws://192.168.1.50:8000/ws/events` | Drone alternate endpoints or future event tooling |
+| Telemetry WebSocket | `ws://192.168.1.140:8000/ws/telemetry` | Drone alternate endpoints when you want an explicit telemetry URL |
+| Events WebSocket | `ws://192.168.1.140:8000/ws/events` | Drone alternate endpoints or future event tooling |
 | Secure companion REST/API base | `https://companion.example.com` | Use when the companion is behind HTTPS/TLS |
 | Secure telemetry WebSocket | `wss://companion.example.com/ws/telemetry` | Secure WebSocket form for HTTPS/TLS deployments |
 | MAVLink UDP bridge | `udp://192.168.1.51:14550` | Drone endpoint for UDP bridge connections |

@@ -10,11 +10,11 @@ export const mockFleetConfig: FleetConfig = {
       role: 'leader',
       transport: {
         type: 'http',
-        endpoint: 'http://192.168.1.50:8000',
+        endpoint: 'http://192.168.1.140:8000',
         api_key: '',
         control_token: '',
       },
-      endpoints: ['http://192.168.1.50:8000', 'ws://192.168.1.50:8000/ws/telemetry'],
+      endpoints: ['http://192.168.1.140:8000', 'ws://192.168.1.140:8000/ws/telemetry'],
       capabilities: ['arm', 'takeoff', 'land', 'mission', 'telemetry'],
       status: 'active',
       last_heartbeat: new Date().toISOString(),

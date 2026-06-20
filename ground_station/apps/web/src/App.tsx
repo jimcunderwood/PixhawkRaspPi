@@ -302,7 +302,7 @@ function cloneFleetConfig(fleet: FleetConfig): FleetConfig {
 }
 
 function defaultCompanionEndpoint(fallback?: string): string {
-  return nonEmptyTrimmed(fallback) ?? 'http://192.168.1.50:8000';
+  return nonEmptyTrimmed(fallback) ?? 'http://192.168.1.140:8000';
 }
 
 function buildTelemetryEndpoint(companionEndpoint?: string): string {
@@ -314,7 +314,7 @@ function buildTelemetryEndpoint(companionEndpoint?: string): string {
     url.hash = '';
     return url.toString();
   } catch {
-    return 'ws://192.168.1.50:8000/ws/telemetry';
+    return 'ws://192.168.1.140:8000/ws/telemetry';
   }
 }
 
@@ -447,7 +447,7 @@ function validateRequiredSettings(settings: GroundStationUserSettings): Settings
     issues.push({ field: 'Transport', message: 'Select a transport type.' });
   }
   if (!drone.transport?.endpoint?.trim()) {
-    issues.push({ field: 'Companion endpoint', message: 'Enter the endpoint for a Companion running on another machine or service, such as http://192.168.1.50:8000.' });
+    issues.push({ field: 'Companion endpoint', message: 'Enter the endpoint for a Companion running on another machine or service, such as http://192.168.1.140:8000.' });
   } else if (!endpointLooksUsable(drone.transport.endpoint)) {
     issues.push({ field: 'Companion endpoint', message: 'Use a full URL with http://, https://, ws://, wss://, or udp://.' });
   }
@@ -1825,7 +1825,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
                   };
                 })
               }
-              placeholder="http://192.168.1.50:8000"
+              placeholder="http://192.168.1.140:8000"
               autoComplete="off"
               spellCheck={false}
             />
@@ -1835,7 +1835,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
             <input
               value={setupTelemetryEndpoint}
               onChange={(event) => updateRequiredSetupTelemetryEndpoint(event.target.value)}
-              placeholder="ws://192.168.1.50:8000/ws/telemetry"
+              placeholder="ws://192.168.1.140:8000/ws/telemetry"
               autoComplete="off"
               spellCheck={false}
             />

@@ -57,7 +57,7 @@ The client should maintain a registry of drones instead of a single active vehic
       "role": "leader",
       "transport": {
         "type": "websocket",
-        "endpoint": "ws://192.168.1.50:9001"
+        "endpoint": "ws://192.168.1.140:9001"
       },
       "capabilities": ["arm", "takeoff", "mission", "telemetry"]
     },

@@ -48,7 +48,7 @@ function emptyPeer(index: number): SwarmPeerConfig {
     role: index === 0 ? 'leader' : 'follower',
     transport: {
       type: index === 0 ? 'websocket' : 'udp',
-      endpoint: index === 0 ? 'ws://192.168.1.50:9001' : `udp://192.168.1.${51 + index}:14550`,
+      endpoint: index === 0 ? 'ws://192.168.1.140:9001' : `udp://192.168.1.${51 + index}:14550`,
     },
     trust: index === 0 ? 'primary' : 'trusted',
     max_age_seconds: 2,

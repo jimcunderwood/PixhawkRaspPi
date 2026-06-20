@@ -146,7 +146,7 @@ export const mockSnapshot: CompanionSnapshot = {
         role: 'leader',
         transport: {
           type: 'websocket',
-          endpoint: 'ws://192.168.1.50:9001',
+          endpoint: 'ws://192.168.1.140:9001',
         },
         status: 'active',
         last_seen_at: Date.now() / 1000,
