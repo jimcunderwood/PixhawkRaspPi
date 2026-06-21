@@ -110,6 +110,11 @@ export function UserSettingsPanel({
   const [createBootstrapApiKey, setCreateBootstrapApiKey] = useState('');
   const [droneEditorOpen, setDroneEditorOpen] = useState(false);
   const [editingDroneId, setEditingDroneId] = useState<string | undefined>();
+  const [deleteDroneRequest, setDeleteDroneRequest] = useState<{
+    profileId: string;
+    droneId: string;
+    label: string;
+  } | null>(null);
   const droneIdInputRef = useRef<HTMLInputElement | null>(null);
   const userNameInputRef = useRef<HTMLInputElement | null>(null);
   const autoOpenedLoginPrompt = useRef(false);
@@ -318,14 +323,18 @@ export function UserSettingsPanel({
     setDroneEditorOpen(true);
   }
 
-  function deleteDrone(profileId: string, droneId: string) {
-    mutateSettings((current) =>
-      updateProfile(current, profileId, (profile) => {
-        if (profile.fleet.drones.length <= 1) {
+  function deleteDroneEverywhere(droneId: string) {
+    mutateSettings((current) => {
+      const profiles = current.profiles.map((profile) => {
+        if (!profile.fleet.drones.some((drone) => drone.drone_id === droneId)) {
           return profile;
         }
 
         const drones = profile.fleet.drones.filter((drone) => drone.drone_id !== droneId);
+        if (!drones.length) {
+          return profile;
+        }
+
         return {
           ...profile,
           selected_drone_id: profile.selected_drone_id === droneId ? drones[0].drone_id : profile.selected_drone_id,
@@ -334,21 +343,30 @@ export function UserSettingsPanel({
             drones,
           },
         };
-      }),
-    );
+      });
+
+      const activeProfile = profiles.find((profile) => profile.profile_id === current.active_profile_id) ?? profiles[0];
+      return {
+        ...current,
+        profiles,
+        active_profile_id: activeProfile?.profile_id ?? current.active_profile_id,
+      };
+    });
   }
 
-  async function deleteActiveDrone(profileId: string, droneId: string) {
-    const drone = editorProfile?.fleet.drones.find((entry) => entry.drone_id === droneId);
-    const droneLabel = drone?.callsign?.trim() ? `${drone.callsign} (${droneId})` : droneId;
-    const confirmed = window.confirm(`Are you sure you want to delete ${droneLabel}?`);
-    if (!confirmed) {
+  async function confirmDeleteDrone() {
+    const request = deleteDroneRequest;
+    if (!request) {
       return;
     }
 
+    const profile = settingsDraft.profiles.find((entry) => entry.profile_id === request.profileId);
     const remainingDroneId =
-      editorProfile?.fleet.drones.find((drone) => drone.drone_id !== droneId)?.drone_id ?? editorProfile?.fleet.drones[0]?.drone_id;
-    deleteDrone(profileId, droneId);
+      profile?.fleet.drones.find((drone) => drone.drone_id !== request.droneId)?.drone_id ??
+      profile?.fleet.drones[0]?.drone_id;
+
+    deleteDroneEverywhere(request.droneId);
+    setDeleteDroneRequest(null);
 
     await new Promise<void>((resolve) => {
       window.requestAnimationFrame(() => resolve());
@@ -357,7 +375,7 @@ export function UserSettingsPanel({
 
     if (remainingDroneId) {
       setEditingDroneId(remainingDroneId);
-      setSelectedDrone(profileId, remainingDroneId);
+      setSelectedDrone(request.profileId, remainingDroneId);
       window.requestAnimationFrame(() => openDroneEditor(remainingDroneId));
     } else {
       setDroneEditorOpen(false);
@@ -500,7 +518,15 @@ export function UserSettingsPanel({
                 <button
                   type="button"
                   className="danger-button"
-                  onClick={() => void deleteActiveDrone(editorProfile.profile_id, editorDrone.drone_id)}
+                  onClick={() =>
+                    setDeleteDroneRequest({
+                      profileId: editorProfile.profile_id,
+                      droneId: editorDrone.drone_id,
+                      label: editorDrone.callsign?.trim()
+                        ? `${editorDrone.callsign} (${editorDrone.drone_id})`
+                        : editorDrone.drone_id,
+                    })
+                  }
                   disabled={loading || saving || editorProfile.fleet.drones.length <= 1}
                 >
                   Delete drone
@@ -831,6 +857,35 @@ export function UserSettingsPanel({
                 Save Drone
               </button>
               <button type="button" className="ghost-button" onClick={() => setDroneEditorOpen(false)} disabled={saving || loading}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {deleteDroneRequest ? (
+        <div className="settings-modal-backdrop" role="presentation">
+          <div className="settings-modal setup-modal" role="dialog" aria-modal="true" aria-labelledby="delete-drone-title">
+            <div className="settings-modal-head">
+              <div>
+                <span className="panel-label">Delete drone</span>
+                <h3 id="delete-drone-title">Confirm deletion</h3>
+              </div>
+              <button type="button" className="ghost-button" onClick={() => setDeleteDroneRequest(null)} disabled={loading || saving}>
+                Close
+              </button>
+            </div>
+
+            <p className="hint">
+              Permanently delete <strong>{deleteDroneRequest.label}</strong> from all profiles? This removes the drone entry everywhere in the
+              app and cannot be undone.
+            </p>
+
+            <div className="settings-actions">
+              <button type="button" className="danger-button" onClick={() => void confirmDeleteDrone()} disabled={loading || saving}>
+                Delete drone
+              </button>
+              <button type="button" className="ghost-button" onClick={() => setDeleteDroneRequest(null)} disabled={loading || saving}>
                 Cancel
               </button>
             </div>
