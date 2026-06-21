@@ -130,7 +130,12 @@ export function UserSettingsPanel({
   }, [settingsDraft.active_profile_id, settingsDraft.profiles]);
 
   const activeProfile = settingsDraft.profiles[activeProfileIndex] ?? settingsDraft.profiles[0];
-  const activeFleet = activeProfile?.fleet ?? cloneFleet(mockFleetConfig);
+  const activeFleet =
+    activeProfile?.fleet ?? {
+      fleet_id: 'empty-fleet',
+      default_transport: 'http',
+      drones: [],
+    };
   const activeDroneId = activeProfile?.selected_drone_id ?? activeFleet.drones[0]?.drone_id;
   const activeDrone = activeFleet.drones.find((drone) => drone.drone_id === activeDroneId) ?? activeFleet.drones[0];
   const profileOptions = settingsDraft.profiles;

@@ -1,5 +1,6 @@
 import type { FleetConfig, DroneFleetEntry } from './fleet';
 import type { TransportKind } from './fleet';
+import type { FlightPathParameters, MissionRouteDraft } from '../mission/routes';
 
 export type GroundStationDroneProfile = Omit<DroneFleetEntry, 'transport'> & {
   transport: {
@@ -28,6 +29,11 @@ export type GroundStationUserSettings = {
   display_name?: string;
   active_profile_id: string;
   profiles: GroundStationRuntimeProfile[];
+  ui_state?: {
+    route_draft?: MissionRouteDraft;
+    flight_path_parameters?: FlightPathParameters;
+    sidebar_sections?: Record<string, boolean>;
+  };
   updated_at?: string;
 };
 

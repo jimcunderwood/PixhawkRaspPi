@@ -42,8 +42,6 @@ import {
   appendDraftWaypoint,
   createMissionRouteDraft,
   type FlightPathParameters,
-  loadStoredDraft,
-  saveStoredDraft,
   serializeFlightPathParameters,
   serializeMissionRouteExport,
   updateDraftBoundary,
@@ -457,7 +455,6 @@ function validateRequiredSettings(settings: GroundStationUserSettings): Settings
 }
 
 function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
-  const routeStorageKey = 'ground-station.route-draft.v1';
   const geotiffInputRef = useRef<HTMLInputElement | null>(null);
   const prescriptionInputRef = useRef<HTMLInputElement | null>(null);
   const [sessionState, setSessionState] = useState<GroundStationSessionState>({
@@ -476,9 +473,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const [refreshing, setRefreshing] = useState(true);
   const [missionMode, setMissionMode] = useState<MissionEditorMode>('view');
   const [screen, setScreen] = useState<'cockpit' | 'planner'>('cockpit');
-  const [routeDraft, setRouteDraft] = useState(() =>
-    loadStoredDraft(routeStorageKey) ?? createMissionRouteDraft('Draft route'),
-  );
+  const [routeDraft, setRouteDraft] = useState(() => createMissionRouteDraft('Draft route'));
   const [flightPathParameters, setFlightPathParameters] = useState(DEFAULT_FLIGHT_PATH_PARAMETERS);
   const [plannerObstacles, setPlannerObstacles] = useState<Array<LatLngPoint & { radius_m?: number; label?: string }>>([]);
   const [plannerMode, setPlannerMode] = useState<MissionEditorMode>('view');
@@ -523,7 +518,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     return current;
   }, [settingsDraft]);
   const activeProfile = draftProfile;
-  const fleetConfig = activeProfile?.fleet ?? mockFleetConfig;
+  const fleetConfig = activeProfile?.fleet ?? undefined;
   const activeDroneId = activeProfile?.selected_drone_id ?? activeProfile?.fleet.drones[0]?.drone_id;
   const activeRuntimeDrone =
     activeProfile?.fleet.drones.find((drone) => drone.drone_id === activeDroneId) ?? activeProfile?.fleet.drones[0];
@@ -753,8 +748,36 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   }, [companionApiKey, companionPollingReady, telemetryBaseUrl, telemetryRefreshIntervalMs, userAuthenticated]);
 
   useEffect(() => {
-    saveStoredDraft(routeStorageKey, routeDraft);
-  }, [routeDraft, routeStorageKey]);
+    setSettingsDraft((current) => ({
+      ...current,
+      ui_state: {
+        ...(current.ui_state ?? {}),
+        route_draft: routeDraft,
+        flight_path_parameters: flightPathParameters,
+        sidebar_sections: sidebarSections,
+      },
+    }));
+  }, [flightPathParameters, routeDraft, sidebarSections]);
+
+  useEffect(() => {
+    const uiState = settingsDraft.ui_state;
+    if (!uiState) {
+      return;
+    }
+
+    if (uiState.route_draft) {
+      setRouteDraft(uiState.route_draft);
+    }
+    if (uiState.flight_path_parameters) {
+      setFlightPathParameters(uiState.flight_path_parameters);
+    }
+    if (uiState.sidebar_sections) {
+      setSidebarSections((current) => ({
+        ...current,
+        ...uiState.sidebar_sections,
+      }));
+    }
+  }, [settingsDraft.ui_state]);
 
   useEffect(() => {
     return () => {
@@ -1116,7 +1139,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       const authority = await acquireControlAuthority(
         apiBase,
         drone.transport.api_key?.trim() || undefined,
-        `gs-${routeStorageKey}-${droneId}`,
+        `gs-route-${droneId}`,
         'ground-station',
       );
       if (authority?.token) {
@@ -1389,7 +1412,6 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   }
 
   function saveRoute() {
-    saveStoredDraft(routeStorageKey, routeDraft);
     setRouteMessage(`Saved ${routeDraft.name} locally`);
   }
 
@@ -1410,7 +1432,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       const authority = await acquireControlAuthority(
         companionBaseUrl,
         companionApiKey || undefined,
-        `gs-${routeStorageKey}`,
+        'gs-route',
         'ground-station',
       );
       tokenToUse = authority?.token ?? '';
