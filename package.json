@@ -1,0 +1,18 @@
+{
+  "name": "pixhawk-rasppi",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "ground_station/apps/web",
+    "ground_station/apps/desktop",
+    "ground_station/apps/mobile"
+  ],
+  "scripts": {
+    "typecheck": "npm --prefix ground_station/apps/web run typecheck",
+    "build:web": "npm --prefix ground_station/apps/web run build",
+    "dev:web": "npm --prefix ground_station/apps/web run dev",
+    "build:desktop": "npm --prefix ground_station/apps/desktop run build:web",
+    "dev:desktop": "npm --prefix ground_station/apps/desktop run dev",
+    "sync:mobile": "npm --prefix ground_station/apps/mobile run sync:web"
+  }
+}

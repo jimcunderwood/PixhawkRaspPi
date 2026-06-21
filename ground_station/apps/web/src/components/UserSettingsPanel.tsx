@@ -325,6 +325,10 @@ export function UserSettingsPanel({
 
   function deleteDroneEverywhere(droneId: string) {
     mutateSettings((current) => {
+      const survivingDrones = current.profiles.flatMap((profile) => profile.fleet.drones.filter((drone) => drone.drone_id !== droneId));
+      const fallbackDrone = survivingDrones[0];
+      const fallbackDroneId = fallbackDrone?.drone_id ?? 'drone-01';
+
       const profiles = current.profiles.map((profile) => {
         if (!profile.fleet.drones.some((drone) => drone.drone_id === droneId)) {
           return profile;
@@ -332,7 +336,25 @@ export function UserSettingsPanel({
 
         const drones = profile.fleet.drones.filter((drone) => drone.drone_id !== droneId);
         if (!drones.length) {
-          return profile;
+          if (!fallbackDrone) {
+            return profile;
+          }
+
+          const replacementId = fallbackDroneId === droneId ? 'drone-01' : fallbackDroneId;
+          return {
+            ...profile,
+            selected_drone_id: replacementId,
+            fleet: {
+              ...profile.fleet,
+              drones: [
+                {
+                  ...fallbackDrone,
+                  drone_id: replacementId,
+                  callsign: fallbackDrone.callsign ?? 'Replacement drone',
+                },
+              ],
+            },
+          };
         }
 
         return {
