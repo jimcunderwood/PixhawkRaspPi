@@ -55,6 +55,7 @@ import {
   type GroundStationUserSettings,
 } from '../../../shared/types/settings';
 import {
+  deleteDroneFromUserSettings,
   loadSession as loadSettingsSession,
   loadUserSettings,
   login as loginUser,
@@ -857,6 +858,28 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       );
     } catch (error) {
       setSettingsMessage(`Save failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  async function handleDeleteDrone(droneId: string): Promise<GroundStationUserSettings | undefined> {
+    setSettingsSaving(true);
+    try {
+      const saved = await deleteDroneFromUserSettings(droneId);
+      if (!saved) {
+        throw new Error('drone delete failed');
+      }
+
+      setSettingsDraft(cloneSettings(saved));
+      setSessionState((current) => ({
+        ...current,
+        authenticated: true,
+        has_users: true,
+        settings: saved,
+      }));
+      setRequiredSetupOpen(validateRequiredSettings(saved).length > 0);
+      return saved;
     } finally {
       setSettingsSaving(false);
     }
@@ -1770,7 +1793,10 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       onSave={handleSaveSettings}
       onDraftChange={setSettingsDraft}
       onAcquireAuthority={handleAcquireAuthority}
-      onDroneDeleted={removeDroneFromLiveSnapshot}
+      onDroneDeleted={async (droneId, replacementDroneId) => {
+        removeDroneFromLiveSnapshot(droneId, replacementDroneId);
+      }}
+      onDeleteDrone={handleDeleteDrone}
       collapsed={userAuthenticated ? !sidebarSections.settings : false}
       onToggleCollapse={() => {
         if (userAuthenticated) {

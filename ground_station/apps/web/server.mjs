@@ -315,6 +315,27 @@ class SettingsStore {
     );
   }
 
+  deleteDroneFromSettings(userId, droneId) {
+    const settings = this.getSettingsForUserId(userId);
+    if (!settings) {
+      return undefined;
+    }
+
+    const nextSettings = JSON.parse(JSON.stringify(settings));
+    for (const profile of nextSettings.profiles ?? []) {
+      const drones = Array.isArray(profile.fleet?.drones)
+        ? profile.fleet.drones.filter((drone) => drone.drone_id !== droneId)
+        : [];
+      profile.fleet.drones = drones;
+      if (profile.selected_drone_id === droneId) {
+        profile.selected_drone_id = drones[0]?.drone_id;
+      }
+    }
+
+    this.upsertSettings(userId, nextSettings);
+    return nextSettings;
+  }
+
   defaultSettingsForUser(userRow) {
     return createDefaultSettings(
       userRow.id,
@@ -714,6 +735,31 @@ export async function startGroundStationServer({
         store.upsertSettings(userRow.id, body);
         await store.save();
         jsonResponse(response, 200, { data: body });
+        return;
+      }
+
+      if (request.method === 'DELETE') {
+        const userRow = store.getSessionUser(request);
+        if (!userRow) {
+          jsonResponse(response, 401, { message: 'not authenticated' });
+          return;
+        }
+
+        const body = await readJsonBody(request).catch(() => undefined);
+        const droneId = typeof body?.drone_id === 'string' ? body.drone_id.trim() : '';
+        if (!droneId) {
+          jsonResponse(response, 400, { message: 'drone_id is required' });
+          return;
+        }
+
+        const updated = store.deleteDroneFromSettings(userRow.id, droneId);
+        if (!updated) {
+          jsonResponse(response, 404, { message: 'no settings found' });
+          return;
+        }
+
+        await store.save();
+        jsonResponse(response, 200, { data: updated });
         return;
       }
     }

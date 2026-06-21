@@ -117,3 +117,20 @@ export async function saveUserSettings(
     return undefined;
   }
 }
+
+export async function deleteDroneFromUserSettings(
+  droneId: string,
+  baseUrl?: string,
+): Promise<GroundStationUserSettings | undefined> {
+  try {
+    const payload = await requestJsonWithBody<{ data?: GroundStationUserSettings }>(
+      '/api/settings/profile',
+      { drone_id: droneId },
+      { baseUrl },
+      'DELETE',
+    );
+    return extractData(payload);
+  } catch {
+    return undefined;
+  }
+}
