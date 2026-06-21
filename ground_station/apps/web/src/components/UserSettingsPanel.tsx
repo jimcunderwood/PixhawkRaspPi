@@ -141,7 +141,7 @@ export function UserSettingsPanel({
   const profileOptions = settingsDraft.profiles;
   const editorProfile = activeProfile;
   const editorDrone =
-    editorProfile?.fleet.drones.find((drone) => drone.drone_id === editingDroneId) ?? activeDrone;
+    editorProfile?.fleet?.drones?.find((drone) => drone.drone_id === editingDroneId) ?? activeDrone;
 
   useEffect(() => {
     if (droneEditorOpen) {
@@ -264,14 +264,14 @@ export function UserSettingsPanel({
   function addDrone(profileId: string) {
     mutateSettings((current) =>
       updateProfile(current, profileId, (profile) => {
-        const nextIndex = profile.fleet.drones.length + 1;
+        const nextIndex = profile.fleet?.drones?.length ? profile.fleet.drones.length + 1 : 1;
         const nextDroneId = `drone-${String(nextIndex).padStart(2, '0')}`;
         return {
           ...profile,
           fleet: {
             ...profile.fleet,
             drones: [
-              ...profile.fleet.drones,
+              ...(profile.fleet?.drones ?? []),
               {
                 drone_id: nextDroneId,
                 callsign: `Drone ${nextIndex}`,
@@ -301,7 +301,7 @@ export function UserSettingsPanel({
     let createdDroneId: string | undefined;
     mutateSettings((current) =>
       updateProfile(current, activeProfile.profile_id, (profile) => {
-        const nextIndex = profile.fleet.drones.length + 1;
+        const nextIndex = profile.fleet?.drones?.length ? profile.fleet.drones.length + 1 : 1;
         const nextDroneId = `drone-${String(nextIndex).padStart(2, '0')}`;
         createdDroneId = nextDroneId;
         const nextDrone: DroneFleetEntry = {
@@ -323,7 +323,7 @@ export function UserSettingsPanel({
           selected_drone_id: nextDroneId,
           fleet: {
             ...profile.fleet,
-            drones: [...profile.fleet.drones, nextDrone],
+            drones: [...(profile.fleet?.drones ?? []), nextDrone],
           },
         };
       }),
@@ -334,7 +334,7 @@ export function UserSettingsPanel({
 
   function deleteDroneEverywhere(settings: GroundStationUserSettings, droneId: string): GroundStationUserSettings {
     const profiles = settings.profiles.map((profile) => {
-      const drones = profile.fleet.drones.filter((drone) => drone.drone_id !== droneId);
+      const drones = (profile.fleet?.drones ?? []).filter((drone) => drone.drone_id !== droneId);
       if (drones.length) {
         return {
           ...profile,
@@ -380,7 +380,7 @@ export function UserSettingsPanel({
     onDroneDeleted(request.droneId);
 
     const profile = saved.profiles.find((entry) => entry.profile_id === request.profileId) ?? saved.profiles[0];
-    const remainingDroneId = profile?.fleet.drones[0]?.drone_id;
+    const remainingDroneId = profile?.fleet?.drones?.[0]?.drone_id;
     if (remainingDroneId) {
       setEditingDroneId(remainingDroneId);
       setSelectedDrone(profile.profile_id, remainingDroneId);
@@ -463,7 +463,7 @@ export function UserSettingsPanel({
                     openDroneEditor(nextDroneId);
                   }}
                 >
-                  {editorProfile.fleet.drones.map((drone) => (
+                  {(editorProfile.fleet?.drones ?? []).map((drone) => (
                     <option key={drone.drone_id} value={drone.drone_id}>
                       {drone.callsign ?? drone.drone_id}
                     </option>
@@ -535,7 +535,7 @@ export function UserSettingsPanel({
                         : editorDrone.drone_id,
                     })
                   }
-                  disabled={loading || saving || editorProfile.fleet.drones.length <= 1}
+                  disabled={loading || saving || (editorProfile.fleet?.drones?.length ?? 0) <= 1}
                 >
                   Delete drone
                 </button>
@@ -555,7 +555,7 @@ export function UserSettingsPanel({
                   openDroneEditor(nextDroneId);
                 }}
               >
-                {editorProfile.fleet.drones.map((drone) => (
+                {(editorProfile.fleet?.drones ?? []).map((drone) => (
                   <option key={drone.drone_id} value={drone.drone_id}>
                     {drone.callsign ?? drone.drone_id}
                   </option>
@@ -596,7 +596,7 @@ export function UserSettingsPanel({
                       ...profile,
                       fleet: {
                         ...profile.fleet,
-                        drones: profile.fleet.drones.map((entry) =>
+                        drones: (profile.fleet?.drones ?? []).map((entry) =>
                           entry.drone_id === editorDrone.drone_id ? { ...entry, callsign: event.target.value } : entry,
                         ),
                       },
@@ -613,7 +613,7 @@ export function UserSettingsPanel({
                       ...profile,
                       fleet: {
                         ...profile.fleet,
-                        drones: profile.fleet.drones.map((entry) =>
+                        drones: (profile.fleet?.drones ?? []).map((entry) =>
                           entry.drone_id === editorDrone.drone_id ? { ...entry, role: event.target.value } : entry,
                         ),
                       },
@@ -630,7 +630,7 @@ export function UserSettingsPanel({
                       ...profile,
                       fleet: {
                         ...profile.fleet,
-                        drones: profile.fleet.drones.map((entry) =>
+                        drones: (profile.fleet?.drones ?? []).map((entry) =>
                           entry.drone_id === editorDrone.drone_id
                             ? {
                                 ...entry,
@@ -661,7 +661,7 @@ export function UserSettingsPanel({
                       ...profile,
                       fleet: {
                         ...profile.fleet,
-                        drones: profile.fleet.drones.map((entry) =>
+                        drones: (profile.fleet?.drones ?? []).map((entry) =>
                           entry.drone_id === editorDrone.drone_id
                             ? {
                                 ...entry,
@@ -691,7 +691,7 @@ export function UserSettingsPanel({
                       ...profile,
                       fleet: {
                         ...profile.fleet,
-                        drones: profile.fleet.drones.map((entry) =>
+                        drones: (profile.fleet?.drones ?? []).map((entry) =>
                           entry.drone_id === editorDrone.drone_id
                             ? {
                                 ...entry,
@@ -716,7 +716,7 @@ export function UserSettingsPanel({
                       ...profile,
                       fleet: {
                         ...profile.fleet,
-                        drones: profile.fleet.drones.map((entry) =>
+                        drones: (profile.fleet?.drones ?? []).map((entry) =>
                           entry.drone_id === editorDrone.drone_id
                             ? {
                                 ...entry,
@@ -744,7 +744,7 @@ export function UserSettingsPanel({
                       ...profile,
                       fleet: {
                         ...profile.fleet,
-                        drones: profile.fleet.drones.map((entry) =>
+                        drones: (profile.fleet?.drones ?? []).map((entry) =>
                           entry.drone_id === editorDrone.drone_id
                             ? {
                                 ...entry,
@@ -788,7 +788,7 @@ export function UserSettingsPanel({
                           ...profile,
                           fleet: {
                             ...profile.fleet,
-                            drones: profile.fleet.drones.map((entry) => {
+                            drones: (profile.fleet?.drones ?? []).map((entry) => {
                               if (entry.drone_id !== editorDrone.drone_id) {
                                 return entry;
                               }
@@ -809,7 +809,7 @@ export function UserSettingsPanel({
                           ...profile,
                           fleet: {
                             ...profile.fleet,
-                            drones: profile.fleet.drones.map((entry) => {
+                            drones: (profile.fleet?.drones ?? []).map((entry) => {
                               if (entry.drone_id !== editorDrone.drone_id) {
                                 return entry;
                               }
@@ -836,7 +836,7 @@ export function UserSettingsPanel({
                     ...profile,
                     fleet: {
                       ...profile.fleet,
-                      drones: profile.fleet.drones.map((entry) => {
+                      drones: (profile.fleet?.drones ?? []).map((entry) => {
                         if (entry.drone_id !== editorDrone.drone_id) {
                           return entry;
                         }

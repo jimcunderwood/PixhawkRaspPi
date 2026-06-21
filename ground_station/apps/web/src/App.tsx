@@ -397,8 +397,8 @@ function ensureRequiredSettingsShape(
   if (!activeProfile.fleet) {
     activeProfile.fleet = buildMinimumFleet(defaultCompanionBaseUrl);
   }
-  if (!activeProfile.selected_drone_id || !activeProfile.fleet.drones.some((drone) => drone.drone_id === activeProfile.selected_drone_id)) {
-    activeProfile.selected_drone_id = activeProfile.fleet.drones[0]?.drone_id;
+  if (!activeProfile.selected_drone_id || !activeProfile.fleet?.drones?.some((drone) => drone.drone_id === activeProfile.selected_drone_id)) {
+    activeProfile.selected_drone_id = activeProfile.fleet?.drones?.[0]?.drone_id;
   }
 
   return next;
@@ -431,8 +431,8 @@ function validateRequiredSettings(settings: GroundStationUserSettings): Settings
   }
 
   const drone =
-    profile.fleet.drones.find((entry) => entry.drone_id === profile.selected_drone_id) ??
-    profile.fleet.drones[0];
+    profile.fleet?.drones?.find((entry) => entry.drone_id === profile.selected_drone_id) ??
+    profile.fleet?.drones?.[0];
   if (!drone.drone_id?.trim()) {
     issues.push({ field: 'Drone ID', message: 'Enter a stable drone ID.' });
   }
@@ -519,9 +519,9 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   }, [settingsDraft]);
   const activeProfile = draftProfile;
   const fleetConfig = activeProfile?.fleet ?? undefined;
-  const activeDroneId = activeProfile?.selected_drone_id ?? activeProfile?.fleet.drones[0]?.drone_id;
+  const activeDroneId = activeProfile?.selected_drone_id ?? activeProfile?.fleet?.drones?.[0]?.drone_id;
   const activeRuntimeDrone =
-    activeProfile?.fleet.drones.find((drone) => drone.drone_id === activeDroneId) ?? activeProfile?.fleet.drones[0];
+    activeProfile?.fleet?.drones?.find((drone) => drone.drone_id === activeDroneId) ?? activeProfile?.fleet?.drones?.[0];
   const userAuthenticated = Boolean(sessionState.authenticated && sessionState.user);
   const companionBaseUrl = userAuthenticated ? selectCompanionApiBase(activeRuntimeDrone, defaultCompanionBaseUrl) : undefined;
   const telemetryBaseUrl = userAuthenticated ? selectTelemetryBase(activeRuntimeDrone, companionBaseUrl) : undefined;
@@ -544,8 +544,8 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     settingsDraft.profiles.find((profile) => profile.profile_id === settingsDraft.active_profile_id) ??
     settingsDraft.profiles[0];
   const setupDrone =
-    setupProfile?.fleet.drones.find((drone) => drone.drone_id === setupProfile.selected_drone_id) ??
-    setupProfile?.fleet.drones[0];
+    setupProfile?.fleet?.drones?.find((drone) => drone.drone_id === setupProfile.selected_drone_id) ??
+    setupProfile?.fleet?.drones?.[0];
   const setupTelemetryEndpoint = setupDrone?.endpoints?.find((endpoint) => {
     const protocol = endpointProtocol(endpoint);
     return protocol === 'ws' || protocol === 'wss';
@@ -934,8 +934,8 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         prepared.profiles.find((profile) => profile.profile_id === prepared.active_profile_id) ??
         prepared.profiles[0];
       const activeDrone =
-        active.fleet.drones.find((drone) => drone.drone_id === active.selected_drone_id) ??
-        active.fleet.drones[0];
+        active.fleet?.drones?.find((drone) => drone.drone_id === active.selected_drone_id) ??
+        active.fleet?.drones?.[0];
 
       if (!active || !activeDrone) {
         return prepared;
@@ -950,7 +950,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
           }
 
           let selectedDroneId = profile.selected_drone_id;
-          const drones = profile.fleet.drones.map((drone) => {
+          const drones = profile.fleet?.drones?.map((drone) => {
             if (drone.drone_id !== activeDrone.drone_id) {
               return drone;
             }
@@ -970,8 +970,8 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
                 : drones[0]?.drone_id,
             fleet: {
               ...profile.fleet,
-              default_transport: drones[0]?.transport.type ?? profile.fleet.default_transport,
-              drones,
+              default_transport: drones?.[0]?.transport.type ?? profile.fleet?.default_transport,
+              drones: drones ?? [],
             },
           };
         }),
@@ -1055,7 +1055,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
               ...profile,
               fleet: {
                 ...profile.fleet,
-                drones: profile.fleet.drones.map((drone) =>
+                drones: profile.fleet?.drones?.map((drone) =>
                   drone.drone_id === droneId
                     ? {
                         ...drone,
@@ -1126,7 +1126,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
   async function handleAcquireAuthority(profileId: string, droneId: string) {
     const profile = settingsDraft.profiles.find((entry) => entry.profile_id === profileId);
-    const drone = profile?.fleet.drones.find((entry) => entry.drone_id === droneId);
+    const drone = profile?.fleet?.drones?.find((entry) => entry.drone_id === droneId);
     const apiBase = selectCompanionApiBase(drone, defaultCompanionBaseUrl);
 
     if (!drone || !apiBase) {
@@ -1270,7 +1270,8 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
   const fleetMarkers = useMemo(
     () =>
-      fleetConfig.drones.map((drone, index) => {
+      userAuthenticated && fleetConfig?.drones?.length
+        ? fleetConfig.drones.map((drone, index) => {
         const liveDrone = fleetStatus?.drones?.find((entry) => entry.drone_id === drone.drone_id);
         const fleetEntry = (liveDrone ?? drone) as FleetMarker;
         const livePosition = fleetEntry.position;
@@ -1303,8 +1304,9 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
           active: fleetEntry.drone_id === activeDroneId || fleetEntry.drone_id === fleetStatus?.self_drone_id,
           position,
         };
-      }),
-    [activeDroneId, fleetConfig.drones, fleetStatus?.drones, fleetStatus?.self_drone_id, mapCenter, vehicle?.heading, vehicle?.location?.altitude, vehicle?.location?.latitude, vehicle?.location?.longitude],
+      })
+        : [],
+    [activeDroneId, fleetConfig?.drones, fleetStatus?.drones, fleetStatus?.self_drone_id, mapCenter, userAuthenticated, vehicle?.heading, vehicle?.location?.altitude, vehicle?.location?.latitude, vehicle?.location?.longitude],
   );
   function addBoundaryPoint(point: LatLngPoint) {
     if (missionMode !== 'boundary') {
@@ -1800,7 +1802,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     geotiffInputRef.current?.click();
   }
 
-  const activeSidebarDrone = activeRuntimeDrone ?? fleetConfig.drones[0];
+  const activeSidebarDrone = activeRuntimeDrone ?? fleetConfig?.drones?.[0];
   const settingsPanel = (
     <UserSettingsPanel
       authenticated={sessionState.authenticated}
