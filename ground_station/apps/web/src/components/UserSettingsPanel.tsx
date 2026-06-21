@@ -338,10 +338,23 @@ export function UserSettingsPanel({
     );
   }
 
-  function deleteActiveDrone(profileId: string, droneId: string) {
+  async function deleteActiveDrone(profileId: string, droneId: string) {
+    const drone = editorProfile?.fleet.drones.find((entry) => entry.drone_id === droneId);
+    const droneLabel = drone?.callsign?.trim() ? `${drone.callsign} (${droneId})` : droneId;
+    const confirmed = window.confirm(`Are you sure you want to delete ${droneLabel}?`);
+    if (!confirmed) {
+      return;
+    }
+
     const remainingDroneId =
       editorProfile?.fleet.drones.find((drone) => drone.drone_id !== droneId)?.drone_id ?? editorProfile?.fleet.drones[0]?.drone_id;
     deleteDrone(profileId, droneId);
+
+    await new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => resolve());
+    });
+    await onSave();
+
     if (remainingDroneId) {
       setEditingDroneId(remainingDroneId);
       setSelectedDrone(profileId, remainingDroneId);
@@ -487,7 +500,7 @@ export function UserSettingsPanel({
                 <button
                   type="button"
                   className="danger-button"
-                  onClick={() => deleteActiveDrone(editorProfile.profile_id, editorDrone.drone_id)}
+                  onClick={() => void deleteActiveDrone(editorProfile.profile_id, editorDrone.drone_id)}
                   disabled={loading || saving || editorProfile.fleet.drones.length <= 1}
                 >
                   Delete drone
