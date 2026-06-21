@@ -866,19 +866,24 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   async function handleDeleteDrone(droneId: string): Promise<GroundStationUserSettings | undefined> {
     setSettingsSaving(true);
     try {
-      const saved = await deleteDroneFromUserSettings(droneId);
-      if (!saved) {
+      const deleted = await deleteDroneFromUserSettings(droneId);
+      if (!deleted) {
         throw new Error('drone delete failed');
       }
 
+      const session = await loadSettingsSession();
+      const freshSettings = session?.authenticated ? session.settings ?? (await loadUserSettings()) : undefined;
+      const saved = freshSettings ?? deleted;
       setSettingsDraft(cloneSettings(saved));
       setSessionState((current) => ({
         ...current,
-        authenticated: true,
-        has_users: true,
+        ...(session ?? {}),
+        authenticated: session?.authenticated ?? true,
+        has_users: session?.has_users ?? true,
         settings: saved,
       }));
       setRequiredSetupOpen(validateRequiredSettings(saved).length > 0);
+      setSettingsMessage('Deleted drone and refreshed session settings.');
       return saved;
     } finally {
       setSettingsSaving(false);
