@@ -25,6 +25,7 @@ type UserSettingsPanelProps = {
   onSave: () => Promise<void>;
   onDraftChange: Dispatch<SetStateAction<GroundStationUserSettings>>;
   onAcquireAuthority: (profileId: string, droneId: string) => Promise<void>;
+  onDroneDeleted: (droneId: string, replacementDroneId?: string) => void;
   collapsed?: boolean;
   onToggleCollapse: () => void;
 };
@@ -81,6 +82,23 @@ function normalizeEndpoints(drone: DroneFleetEntry, endpoints: string[]): DroneF
   };
 }
 
+function buildFallbackDrone(reference?: DroneFleetEntry, droneId = 'drone-01'): DroneFleetEntry {
+  const fallback = cloneFleet(mockFleetConfig).drones[0];
+  const source = reference ?? fallback;
+  return {
+    ...fallback,
+    ...source,
+    drone_id: droneId,
+    callsign: source.callsign ?? fallback.callsign ?? 'Replacement drone',
+    transport: {
+      ...fallback.transport,
+      ...source.transport,
+      endpoint: source.transport.endpoint || fallback.transport.endpoint,
+    },
+    endpoints: source.endpoints?.length ? [...source.endpoints] : [...(fallback.endpoints ?? [])],
+  };
+}
+
 export function UserSettingsPanel({
   authenticated,
   hasUsers,
@@ -97,6 +115,7 @@ export function UserSettingsPanel({
   onSave,
   onDraftChange,
   onAcquireAuthority,
+  onDroneDeleted,
   collapsed = false,
   onToggleCollapse,
 }: UserSettingsPanelProps) {
@@ -323,40 +342,13 @@ export function UserSettingsPanel({
     setDroneEditorOpen(true);
   }
 
-  function deleteDroneEverywhere(droneId: string) {
-    mutateSettings((current) => {
-      const survivingDrones = current.profiles.flatMap((profile) => profile.fleet.drones.filter((drone) => drone.drone_id !== droneId));
-      const fallbackDrone = survivingDrones[0];
-      const fallbackDroneId = fallbackDrone?.drone_id ?? 'drone-01';
+  function deleteDroneEverywhere(settings: GroundStationUserSettings, droneId: string): GroundStationUserSettings {
+    const survivingDrones = settings.profiles.flatMap((profile) => profile.fleet.drones.filter((drone) => drone.drone_id !== droneId));
+    const fallbackTemplate = survivingDrones[0] ?? buildFallbackDrone(undefined, 'drone-01');
 
-      const profiles = current.profiles.map((profile) => {
-        if (!profile.fleet.drones.some((drone) => drone.drone_id === droneId)) {
-          return profile;
-        }
-
-        const drones = profile.fleet.drones.filter((drone) => drone.drone_id !== droneId);
-        if (!drones.length) {
-          if (!fallbackDrone) {
-            return profile;
-          }
-
-          const replacementId = fallbackDroneId === droneId ? 'drone-01' : fallbackDroneId;
-          return {
-            ...profile,
-            selected_drone_id: replacementId,
-            fleet: {
-              ...profile.fleet,
-              drones: [
-                {
-                  ...fallbackDrone,
-                  drone_id: replacementId,
-                  callsign: fallbackDrone.callsign ?? 'Replacement drone',
-                },
-              ],
-            },
-          };
-        }
-
+    const profiles = settings.profiles.map((profile) => {
+      const drones = profile.fleet.drones.filter((drone) => drone.drone_id !== droneId);
+      if (drones.length) {
         return {
           ...profile,
           selected_drone_id: profile.selected_drone_id === droneId ? drones[0].drone_id : profile.selected_drone_id,
@@ -365,15 +357,25 @@ export function UserSettingsPanel({
             drones,
           },
         };
-      });
+      }
 
-      const activeProfile = profiles.find((profile) => profile.profile_id === current.active_profile_id) ?? profiles[0];
+      const replacementDrone = buildFallbackDrone(fallbackTemplate, fallbackTemplate.drone_id === droneId ? 'drone-01' : fallbackTemplate.drone_id);
       return {
-        ...current,
-        profiles,
-        active_profile_id: activeProfile?.profile_id ?? current.active_profile_id,
+        ...profile,
+        selected_drone_id: replacementDrone.drone_id,
+        fleet: {
+          ...profile.fleet,
+          drones: [replacementDrone],
+        },
       };
     });
+
+    const activeProfile = profiles.find((profile) => profile.profile_id === settings.active_profile_id) ?? profiles[0];
+    return {
+      ...settings,
+      profiles,
+      active_profile_id: activeProfile?.profile_id ?? settings.active_profile_id,
+    };
   }
 
   async function confirmDeleteDrone() {
@@ -382,23 +384,22 @@ export function UserSettingsPanel({
       return;
     }
 
-    const profile = settingsDraft.profiles.find((entry) => entry.profile_id === request.profileId);
+    const nextSettings = deleteDroneEverywhere(settingsDraft, request.droneId);
+    const profile = nextSettings.profiles.find((entry) => entry.profile_id === request.profileId);
     const remainingDroneId =
       profile?.fleet.drones.find((drone) => drone.drone_id !== request.droneId)?.drone_id ??
       profile?.fleet.drones[0]?.drone_id;
 
-    deleteDroneEverywhere(request.droneId);
+    onDraftChange(cloneSettings(nextSettings));
     setDeleteDroneRequest(null);
 
-    await new Promise<void>((resolve) => {
-      window.requestAnimationFrame(() => resolve());
-    });
     await onSave();
+    onDroneDeleted(request.droneId, remainingDroneId);
 
     if (remainingDroneId) {
       setEditingDroneId(remainingDroneId);
       setSelectedDrone(request.profileId, remainingDroneId);
-      window.requestAnimationFrame(() => openDroneEditor(remainingDroneId));
+      openDroneEditor(remainingDroneId);
     } else {
       setDroneEditorOpen(false);
     }

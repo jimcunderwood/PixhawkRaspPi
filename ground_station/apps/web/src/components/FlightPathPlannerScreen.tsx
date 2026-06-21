@@ -105,19 +105,19 @@ export function FlightPathPlannerScreen({
               <button type="button" className="secondary-button" onClick={() => onModeChange('boundary')}>
                 Draw boundary
               </button>
-            <button type="button" className="secondary-button" onClick={() => onModeChange('waypoint')}>
-              Add obstacles
-            </button>
-            <button type="button" className="secondary-button" onClick={onGeneratePath}>
-              Auto-optimize
-            </button>
-            <button type="button" className="primary-button" onClick={onSaveMission}>
-              Save mission
-            </button>
-            <button type="button" className="secondary-button" onClick={onUploadMission}>
-              Upload mission
-            </button>
-          </div>
+              <button type="button" className="secondary-button" onClick={() => onModeChange('waypoint')}>
+                Add waypoints
+              </button>
+              <button type="button" className="secondary-button" onClick={onGeneratePath}>
+                Auto-optimize
+              </button>
+              <button type="button" className="primary-button" onClick={onSaveMission}>
+                Save mission
+              </button>
+              <button type="button" className="secondary-button" onClick={onUploadMission}>
+                Upload mission
+              </button>
+            </div>
           </div>
 
           <FieldMap
@@ -140,7 +140,16 @@ export function FlightPathPlannerScreen({
                 onBoundaryChange([...boundary, point]);
                 return;
               }
-              onObstaclesChange([...obstacles, { ...point, radius_m: 3, label: `Obstacle ${obstacles.length + 1}` }]);
+              if (mode === 'waypoint') {
+                onWaypointsChange([
+                  ...waypoints,
+                  {
+                    ...point,
+                    id: `wp-${waypoints.length + 1}`,
+                    label: `Waypoint ${waypoints.length + 1}`,
+                  },
+                ]);
+              }
             }}
             onBoundaryChange={onBoundaryChange}
             onWaypointsChange={onWaypointsChange}

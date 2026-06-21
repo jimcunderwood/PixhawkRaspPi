@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { TelemetrySeriesPoint, TelemetrySnapshot, TelemetryStreamState } from '../types';
-import { buildWebSocketUrl } from '../../../../shared/api/companion';
+import { buildWebSocketUrl, loadTelemetryCurrent } from '../../../../shared/api/companion';
 import { appendTelemetrySample, normalizeTelemetryPayload } from '../../../../shared/telemetry/stream';
 
 type UseTelemetryStreamResult = {
@@ -129,6 +129,35 @@ export function useTelemetryStream(
       } catch {
         // ignore
       }
+    };
+  }, [apiKey, companionBaseUrl]);
+
+  useEffect(() => {
+    if (!companionBaseUrl) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function refreshCurrentTelemetry() {
+      const current = await loadTelemetryCurrent(apiKey, companionBaseUrl);
+      if (cancelled || !current) {
+        return;
+      }
+
+      setLatest(current);
+      setSamples((existing) => appendTelemetrySample(existing, current, makeId()));
+      setLastMessageAt(Date.now());
+    }
+
+    void refreshCurrentTelemetry();
+    const timer = window.setInterval(() => {
+      void refreshCurrentTelemetry();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
     };
   }, [apiKey, companionBaseUrl]);
 

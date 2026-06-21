@@ -497,6 +497,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const [farmMessage, setFarmMessage] = useState('farm integrations idle');
   const [flightLogMessage, setFlightLogMessage] = useState('flight log history not loaded');
   const [flightLogBundles, setFlightLogBundles] = useState<FlightLogSyncHistoryEntry[]>([]);
+  const [uiRevision, setUiRevision] = useState(0);
   const [sidebarSections, setSidebarSections] = useState({
     drones: true,
     connection: true,
@@ -1017,6 +1018,49 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
           : profile,
       ),
     }));
+  }
+
+  function removeDroneFromLiveSnapshot(droneId: string, replacementDroneId?: string) {
+    setStatusSnapshot((current) => {
+      const fleet = current.fleet;
+      if (!fleet?.drones?.length) {
+        return current;
+      }
+
+      const survivingDrones = fleet.drones.filter((entry) => entry.drone_id !== droneId);
+      const nextDrones = survivingDrones.length
+        ? survivingDrones
+        : replacementDroneId
+          ? [
+              {
+                ...(fleet.drones.find((entry) => entry.drone_id === replacementDroneId) ?? fleet.drones[0]),
+                drone_id: replacementDroneId,
+              },
+            ]
+          : fleet.drones;
+
+      return {
+        ...current,
+        fleet: {
+          ...fleet,
+          self_drone_id:
+            fleet.self_drone_id === droneId
+              ? replacementDroneId ?? nextDrones[0]?.drone_id
+              : fleet.self_drone_id,
+          active_drone_count: nextDrones.length,
+          peer_count: nextDrones.length,
+          drones: nextDrones.map((entry) =>
+            entry.drone_id === replacementDroneId
+              ? {
+                  ...entry,
+                  drone_id: replacementDroneId,
+                }
+              : entry,
+          ),
+        },
+      };
+    });
+    setUiRevision((current) => current + 1);
   }
 
   function storeDraftControlToken(profileId: string | undefined, droneId: string | undefined, token: string) {
@@ -1725,6 +1769,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       onSave={handleSaveSettings}
       onDraftChange={setSettingsDraft}
       onAcquireAuthority={handleAcquireAuthority}
+      onDroneDeleted={removeDroneFromLiveSnapshot}
       collapsed={userAuthenticated ? !sidebarSections.settings : false}
       onToggleCollapse={() => {
         if (userAuthenticated) {
@@ -1919,7 +1964,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside key={`sidebar-${uiRevision}`} className="sidebar">
         <div className="brand">
           <div className="brand-mark">GS</div>
           <div>
@@ -2025,7 +2070,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         {settingsPanel}
       </aside>
 
-      <main className="content">
+      <main key={`content-${uiRevision}`} className="content">
         <header className="hero">
           <div>
             <span className="eyebrow">Field operations cockpit</span>
