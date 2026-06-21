@@ -5,7 +5,7 @@
   "role": "leader",
   "transport": {
     "type": "websocket",
-    "endpoint": "ws://192.168.1.140:9001",
+    "endpoint": "ws://localhost:9001",
     "channel": "telemetry"
   },
   "peers": [
@@ -15,7 +15,7 @@
       "role": "leader",
       "transport": {
         "type": "websocket",
-        "endpoint": "ws://192.168.1.140:9001"
+        "endpoint": "ws://localhost:9001"
       },
       "trust": "primary",
       "max_age_seconds": 1.5,
@@ -27,7 +27,7 @@
       "role": "follower",
       "transport": {
         "type": "udp",
-        "endpoint": "udp://192.168.1.51:14550"
+        "endpoint": "udp://localhost:14550"
       },
       "trust": "trusted",
       "max_age_seconds": 2.5,

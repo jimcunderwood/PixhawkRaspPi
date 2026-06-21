@@ -146,7 +146,7 @@ export const mockSnapshot: CompanionSnapshot = {
         role: 'leader',
         transport: {
           type: 'websocket',
-          endpoint: 'ws://192.168.1.140:9001',
+          endpoint: 'ws://localhost:9001',
         },
         status: 'active',
         last_seen_at: Date.now() / 1000,
@@ -168,7 +168,7 @@ export const mockSnapshot: CompanionSnapshot = {
         role: 'wing',
         transport: {
           type: 'udp',
-          endpoint: 'udp://192.168.1.51:14550',
+          endpoint: 'udp://localhost:14550',
         },
         status: 'staged',
         last_seen_at: Date.now() / 1000 - 18,

@@ -42,13 +42,15 @@ function formatAge(timestamp?: number) {
 }
 
 function emptyPeer(index: number): SwarmPeerConfig {
+  const websocketEndpoint = 'ws://localhost:9001';
+  const udpEndpoint = 'udp://localhost:14550';
   return {
     drone_id: `drone-${String(index + 1).padStart(2, '0')}`,
     callsign: index === 0 ? 'Companion' : `Peer ${index + 1}`,
     role: index === 0 ? 'leader' : 'follower',
     transport: {
       type: index === 0 ? 'websocket' : 'udp',
-      endpoint: index === 0 ? 'ws://192.168.1.140:9001' : `udp://192.168.1.${51 + index}:14550`,
+      endpoint: index === 0 ? websocketEndpoint : udpEndpoint,
     },
     trust: index === 0 ? 'primary' : 'trusted',
     max_age_seconds: 2,

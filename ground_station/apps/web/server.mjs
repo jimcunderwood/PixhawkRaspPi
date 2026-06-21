@@ -74,20 +74,23 @@ function hashPassword(password, salt) {
 }
 
 function buildTelemetryEndpoint(companionEndpoint) {
+  if (!companionEndpoint) {
+    return '';
+  }
   try {
-    const url = new URL(companionEndpoint || 'http://192.168.1.140:8000');
+    const url = new URL(companionEndpoint);
     url.protocol = url.protocol === 'https:' || url.protocol === 'wss:' ? 'wss:' : 'ws:';
     url.pathname = '/ws/telemetry';
     url.search = '';
     url.hash = '';
     return url.toString();
   } catch {
-    return 'ws://192.168.1.140:8000/ws/telemetry';
+    return '';
   }
 }
 
 function createDefaultSettings(userId, username, displayName, companionBaseUrl, apiKey = '') {
-  const companionEndpoint = companionBaseUrl || 'http://192.168.1.140:8000';
+  const companionEndpoint = companionBaseUrl || '';
   const telemetryEndpoint = buildTelemetryEndpoint(companionEndpoint);
   const transportType = companionEndpoint.startsWith('ws') || companionEndpoint.startsWith('wss') ? 'websocket' : 'http';
 
@@ -116,7 +119,7 @@ function createDefaultSettings(userId, username, displayName, companionBaseUrl, 
                 api_key: apiKey,
                 control_token: '',
               },
-              endpoints: [companionEndpoint, telemetryEndpoint],
+              endpoints: [companionEndpoint, telemetryEndpoint].filter(Boolean),
               capabilities: ['arm', 'takeoff', 'land', 'mission', 'telemetry'],
               status: 'active',
               last_heartbeat: new Date().toISOString(),
@@ -127,11 +130,11 @@ function createDefaultSettings(userId, username, displayName, companionBaseUrl, 
               role: 'wing',
               transport: {
                 type: 'udp',
-                endpoint: 'udp://192.168.1.51:14550',
+                endpoint: '',
                 api_key: apiKey,
                 control_token: '',
               },
-              endpoints: ['udp://192.168.1.51:14550'],
+              endpoints: [],
               capabilities: ['mission', 'telemetry'],
               status: 'staged',
               last_heartbeat: new Date().toISOString(),

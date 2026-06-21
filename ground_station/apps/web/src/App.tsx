@@ -300,20 +300,25 @@ function cloneFleetConfig(fleet: FleetConfig): FleetConfig {
   return JSON.parse(JSON.stringify(fleet)) as FleetConfig;
 }
 
-function defaultCompanionEndpoint(fallback?: string): string {
-  return nonEmptyTrimmed(fallback) ?? 'http://192.168.1.140:8000';
+function defaultCompanionEndpoint(fallback?: string): string | undefined {
+  return nonEmptyTrimmed(fallback);
 }
 
-function buildTelemetryEndpoint(companionEndpoint?: string): string {
+function buildTelemetryEndpoint(companionEndpoint?: string): string | undefined {
+  const resolvedEndpoint = defaultCompanionEndpoint(companionEndpoint);
+  if (!resolvedEndpoint) {
+    return undefined;
+  }
+
   try {
-    const url = new URL(defaultCompanionEndpoint(companionEndpoint));
+    const url = new URL(resolvedEndpoint);
     url.protocol = url.protocol === 'https:' || url.protocol === 'wss:' ? 'wss:' : 'ws:';
     url.pathname = '/ws/telemetry';
     url.search = '';
     url.hash = '';
     return url.toString();
   } catch {
-    return 'ws://192.168.1.140:8000/ws/telemetry';
+    return undefined;
   }
 }
 
@@ -337,11 +342,11 @@ function buildMinimumFleet(defaultCompanionBaseUrl?: string): FleetConfig {
     role: 'leader',
     transport: {
       type: 'http',
-      endpoint,
+      endpoint: endpoint ?? '',
       api_key: '',
       control_token: '',
     },
-    endpoints: [endpoint, buildTelemetryEndpoint(endpoint)],
+    endpoints: [endpoint, buildTelemetryEndpoint(endpoint)].filter((value): value is string => Boolean(value?.trim())),
     status: 'active',
   };
   const drone: DroneFleetEntry = {
@@ -352,11 +357,11 @@ function buildMinimumFleet(defaultCompanionBaseUrl?: string): FleetConfig {
     transport: {
       ...(sourceDrone?.transport ?? { type: 'http', endpoint: '' }),
       type: inferTransportKind(endpoint),
-      endpoint,
+      endpoint: endpoint ?? '',
       api_key: sourceDrone?.transport?.api_key ?? '',
       control_token: sourceDrone?.transport?.control_token ?? '',
     },
-    endpoints: [endpoint, buildTelemetryEndpoint(endpoint)],
+    endpoints: [endpoint, buildTelemetryEndpoint(endpoint)].filter((value): value is string => Boolean(value?.trim())),
     status: sourceDrone?.status ?? 'active',
   };
 
@@ -373,16 +378,6 @@ function ensureRequiredSettingsShape(
 ): GroundStationUserSettings {
   const next = cloneSettings(settings);
   if (!next.profiles.length) {
-    next.profiles = [
-      {
-        profile_id: 'profile-default',
-        label: 'Primary profile',
-        companion_base_url: defaultCompanionBaseUrl,
-        selected_drone_id: 'drone-01',
-        fleet: buildMinimumFleet(defaultCompanionBaseUrl),
-      },
-    ];
-    next.active_profile_id = 'profile-default';
     return next;
   }
 
@@ -395,7 +390,11 @@ function ensureRequiredSettingsShape(
     activeProfile.label = 'Primary profile';
   }
   if (!activeProfile.fleet) {
-    activeProfile.fleet = buildMinimumFleet(defaultCompanionBaseUrl);
+    activeProfile.fleet = {
+      fleet_id: 'empty-fleet',
+      default_transport: 'http',
+      drones: [],
+    };
   }
   if (!activeProfile.selected_drone_id || !activeProfile.fleet?.drones?.some((drone) => drone.drone_id === activeProfile.selected_drone_id)) {
     activeProfile.selected_drone_id = activeProfile.fleet?.drones?.[0]?.drone_id;
@@ -443,7 +442,7 @@ function validateRequiredSettings(settings: GroundStationUserSettings): Settings
     issues.push({ field: 'Transport', message: 'Select a transport type.' });
   }
   if (!drone.transport?.endpoint?.trim()) {
-    issues.push({ field: 'Companion endpoint', message: 'Enter the endpoint for a Companion running on another machine or service, such as http://192.168.1.140:8000.' });
+    issues.push({ field: 'Companion endpoint', message: 'Enter the endpoint for a Companion running on another machine or service.' });
   } else if (!endpointLooksUsable(drone.transport.endpoint)) {
     issues.push({ field: 'Companion endpoint', message: 'Use a full URL with http://, https://, ws://, wss://, or udp://.' });
   }
@@ -549,7 +548,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
   const setupTelemetryEndpoint = setupDrone?.endpoints?.find((endpoint) => {
     const protocol = endpointProtocol(endpoint);
     return protocol === 'ws' || protocol === 'wss';
-  }) ?? buildTelemetryEndpoint(setupDrone?.transport.endpoint || defaultCompanionBaseUrl);
+  }) ?? buildTelemetryEndpoint(setupDrone?.transport.endpoint || defaultCompanionBaseUrl) ?? '';
   function toggleSidebarSection(section: keyof typeof sidebarSections) {
     setSidebarSections((current) => ({
       ...current,
@@ -585,10 +584,10 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         }
 
         if (!cancelled) {
-          const preparedSettings = ensureRequiredSettingsShape(saved, defaultCompanionBaseUrl);
+          const preparedSettings = cloneSettings(saved);
           const setupIssues = validateRequiredSettings(preparedSettings);
           setSessionState({ ...session, settings: preparedSettings });
-          setSettingsDraft(cloneSettings(preparedSettings));
+          setSettingsDraft(preparedSettings);
           setRequiredSetupOpen(setupIssues.length > 0);
           setSettingsMessage(
             setupIssues.length
@@ -990,7 +989,9 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         .filter((entry) => entry !== primaryEndpoint);
       return {
         ...drone,
-        endpoints: [primaryEndpoint, endpoint, ...nonTelemetryEndpoints].filter((entry) => entry.trim()),
+        endpoints: [primaryEndpoint, endpoint, ...nonTelemetryEndpoints].filter(
+          (entry): entry is string => Boolean(entry?.trim()),
+        ),
       };
     });
   }
@@ -1928,9 +1929,12 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
                   const endpoint = event.target.value;
                   const currentTelemetryEndpoint =
                     drone.endpoints?.find((entry) => {
+                      if (!entry) {
+                        return false;
+                      }
                       const protocol = endpointProtocol(entry);
                       return protocol === 'ws' || protocol === 'wss';
-                    }) ?? buildTelemetryEndpoint(endpoint);
+                    }) ?? buildTelemetryEndpoint(endpoint) ?? '';
                   return {
                     ...drone,
                     transport: {
@@ -1941,7 +1945,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
                   };
                 })
               }
-              placeholder="http://192.168.1.140:8000"
+              placeholder="https://companion.example.com"
               autoComplete="off"
               spellCheck={false}
             />
@@ -1951,7 +1955,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
             <input
               value={setupTelemetryEndpoint}
               onChange={(event) => updateRequiredSetupTelemetryEndpoint(event.target.value)}
-              placeholder="ws://192.168.1.140:8000/ws/telemetry"
+              placeholder="wss://companion.example.com/ws/telemetry"
               autoComplete="off"
               spellCheck={false}
             />
