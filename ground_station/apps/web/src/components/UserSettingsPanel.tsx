@@ -401,6 +401,23 @@ export function UserSettingsPanel({
         {authenticated ? (
           <>
             <div className="stack">
+              <label className="field">
+                <span>Drone</span>
+                <select
+                  value={activeDrone?.drone_id ?? ''}
+                  onChange={(event) => {
+                    const nextDroneId = event.target.value;
+                    setSelectedDrone(editorProfile.profile_id, nextDroneId);
+                    openDroneEditor(nextDroneId);
+                  }}
+                >
+                  {editorProfile.fleet.drones.map((drone) => (
+                    <option key={drone.drone_id} value={drone.drone_id}>
+                      {drone.callsign ?? drone.drone_id}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <StatusChip label="User" value={sessionUser?.display_name ?? sessionUser?.username ?? 'signed in'} tone="good" />
               <StatusChip label="Storage" value="SQLite-backed session" tone="neutral" />
               <StatusChip
@@ -423,6 +440,9 @@ export function UserSettingsPanel({
             <div className="settings-actions">
               <button type="button" className="secondary-button" onClick={() => openDroneEditor(activeDrone?.drone_id)} disabled={loading}>
                 Drone settings
+              </button>
+              <button type="button" className="secondary-button" onClick={createAndEditDrone} disabled={loading}>
+                Add drone
               </button>
               <button type="button" className="secondary-button" onClick={() => setUserEditorOpen(true)} disabled={loading}>
                 Edit user settings
