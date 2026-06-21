@@ -19,11 +19,14 @@ WORKDIR /app
 ENV GROUND_STATION_HOST=0.0.0.0
 ENV GROUND_STATION_PORT=8080
 ENV GROUND_STATION_SHELL_LABEL=web
+ENV GROUND_STATION_DATA_DIRECTORY=/var/lib/ground-station
 ENV COMPANION_BASE_URL=
 ENV API_KEY=
 
 COPY --from=build /workspace/ground_station/apps/web /app
 
 EXPOSE 8080
+
+VOLUME ["/var/lib/ground-station"]
 
 CMD ["node", "server.mjs"]

@@ -804,31 +804,27 @@ export function UserSettingsPanel({
                       <p className="hint">Use an existing account to load stored settings.</p>
                     </div>
                   </div>
-                  {authMode === 'signIn' ? (
-                    <>
-                      <label className="field">
-                        <span>Username</span>
-                        <input
-                          ref={userNameInputRef}
-                          value={username}
-                          onChange={(event) => setUsername(event.target.value)}
-                          autoComplete="username"
-                          spellCheck={false}
-                          placeholder="pilot"
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Password</span>
-                        <input
-                          type="password"
-                          value={password}
-                          onChange={(event) => setPassword(event.target.value)}
-                          autoComplete="current-password"
-                          spellCheck={false}
-                        />
-                      </label>
-                    </>
-                  ) : null}
+                  <label className="field">
+                    <span>Username</span>
+                    <input
+                      ref={userNameInputRef}
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                      autoComplete="username"
+                      spellCheck={false}
+                      placeholder="pilot"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Password</span>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      autoComplete="current-password"
+                      spellCheck={false}
+                    />
+                  </label>
                 </section>
               ) : authenticated ? (
                 <section className="auth-card">
@@ -844,7 +840,7 @@ export function UserSettingsPanel({
                     </button>
                   </div>
                 </section>
-              )}
+              ) : null}
               {!authenticated && authMode === 'create' ? (
                 <section className="auth-card auth-card-accent">
                   <div className="auth-card-head">

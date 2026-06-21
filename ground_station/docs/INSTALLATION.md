@@ -165,6 +165,11 @@ For a separate-machine install, copy `ground_station/apps/web/.env.example` to
 into that file. The Compose ground-station profile reads it and uses the API key
 as the default `admin` password and default drone API key.
 
+The ground-station SQLite database is stored in `/var/lib/ground-station` inside
+the container. The Compose profile already mounts that path to the
+`ground-station-data` named volume, so user accounts and settings survive
+redeploys as long as you keep that volume.
+
 ## Desktop
 
 The desktop shell reuses the built web app and launches it inside Electron.
