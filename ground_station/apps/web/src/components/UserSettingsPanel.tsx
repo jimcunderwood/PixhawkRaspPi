@@ -22,7 +22,7 @@ type UserSettingsPanelProps = {
   acquiringAuthorityDroneId?: string;
   onLogin: (request: GroundStationLoginRequest) => Promise<boolean>;
   onLogout: () => Promise<void>;
-  onSave: () => Promise<void>;
+  onSave: (settings?: GroundStationUserSettings) => Promise<void>;
   onDraftChange: Dispatch<SetStateAction<GroundStationUserSettings>>;
   onAcquireAuthority: (profileId: string, droneId: string) => Promise<void>;
   onDroneDeleted: (droneId: string, replacementDroneId?: string) => void;
@@ -393,7 +393,7 @@ export function UserSettingsPanel({
     onDraftChange(cloneSettings(nextSettings));
     setDeleteDroneRequest(null);
 
-    await onSave();
+    await onSave(nextSettings);
     onDroneDeleted(request.droneId, remainingDroneId);
 
     if (remainingDroneId) {
@@ -1076,7 +1076,7 @@ export function UserSettingsPanel({
                   )
                 ) : (
                   <>
-                    <button type="button" className="secondary-button" onClick={onSave} disabled={saving || loading}>
+                    <button type="button" className="secondary-button" onClick={() => void onSave()} disabled={saving || loading}>
                       Save settings
                     </button>
                     <button type="button" className="ghost-button" onClick={onLogout} disabled={saving || loading}>

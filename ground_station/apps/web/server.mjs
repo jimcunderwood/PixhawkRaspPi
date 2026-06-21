@@ -379,7 +379,7 @@ class SettingsStore {
   }
 
   ensureDefaultAdminUser() {
-    const adminPassword = this.apiKey || 'admin';
+    const adminPassword = 'admin';
     let adminRow = this.getUserByUsername(this.adminUsername);
     if (!adminRow) {
       adminRow = this.createUser({
@@ -388,7 +388,7 @@ class SettingsStore {
         displayName: 'Admin',
         seedSettings: false,
       });
-    } else if (this.apiKey && !this.verifyPassword(adminRow, adminPassword)) {
+    } else if (!this.verifyPassword(adminRow, adminPassword)) {
       this.updateUserPassword(adminRow.id, adminPassword);
       adminRow = this.getUserById(adminRow.id);
     }

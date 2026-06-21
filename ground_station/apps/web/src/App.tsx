@@ -832,10 +832,11 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
     }
   }
 
-  async function handleSaveSettings() {
+  async function handleSaveSettings(nextSettings?: GroundStationUserSettings) {
     setSettingsSaving(true);
     try {
-      const saved = await saveUserSettings(settingsDraft);
+      const settingsToSave = nextSettings ?? settingsDraft;
+      const saved = await saveUserSettings(settingsToSave);
       if (!saved) {
         throw new Error('settings save failed');
       }

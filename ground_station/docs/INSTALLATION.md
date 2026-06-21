@@ -73,9 +73,9 @@ docker run --rm -p 8080:80 --env-file ground_station/apps/web/.env ground-statio
 ```
 
 Before first startup, set `COMPANION_BASE_URL` in `ground_station/apps/web/.env`
-to the companion machine. If you set `API_KEY`, the first startup uses it as the
-admin password; otherwise the default `admin` password is used. When an API key
-is available, it is copied into the default admin drone connection settings.
+to the companion machine. The built-in admin account always uses the password
+`admin`. When an API key is available, it is copied into the default admin
+drone connection settings.
 
 ## macOS
 
