@@ -421,6 +421,9 @@ export function UserSettingsPanel({
             </div>
 
             <div className="settings-actions">
+              <button type="button" className="secondary-button" onClick={() => openDroneEditor(activeDrone?.drone_id)} disabled={loading}>
+                Drone settings
+              </button>
               <button type="button" className="secondary-button" onClick={() => setUserEditorOpen(true)} disabled={loading}>
                 Edit user settings
               </button>

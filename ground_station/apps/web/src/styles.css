@@ -165,6 +165,13 @@ button {
   gap: 12px;
 }
 
+.sidebar-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .sidebar-panel-head h3 {
   margin-top: 2px;
   font-size: 1rem;
