@@ -338,6 +338,19 @@ export function UserSettingsPanel({
     );
   }
 
+  function deleteActiveDrone(profileId: string, droneId: string) {
+    const remainingDroneId =
+      editorProfile?.fleet.drones.find((drone) => drone.drone_id !== droneId)?.drone_id ?? editorProfile?.fleet.drones[0]?.drone_id;
+    deleteDrone(profileId, droneId);
+    if (remainingDroneId) {
+      setEditingDroneId(remainingDroneId);
+      setSelectedDrone(profileId, remainingDroneId);
+      window.requestAnimationFrame(() => openDroneEditor(remainingDroneId));
+    } else {
+      setDroneEditorOpen(false);
+    }
+  }
+
   function setSelectedDrone(profileId: string, droneId: string) {
     setProfileField(profileId, (profile) => ({
       ...profile,
@@ -470,6 +483,14 @@ export function UserSettingsPanel({
               <div className="settings-modal-head-actions">
                 <button type="button" className="secondary-button" onClick={createAndEditDrone} disabled={loading || saving}>
                   Add drone
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  onClick={() => deleteActiveDrone(editorProfile.profile_id, editorDrone.drone_id)}
+                  disabled={loading || saving || editorProfile.fleet.drones.length <= 1}
+                >
+                  Delete drone
                 </button>
                 <button type="button" className="ghost-button" onClick={() => setDroneEditorOpen(false)} disabled={loading || saving}>
                   Close
