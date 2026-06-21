@@ -872,7 +872,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
       }
 
       const session = await loadSettingsSession();
-      const freshSettings = session?.authenticated ? session.settings ?? (await loadUserSettings()) : undefined;
+      const freshSettings = session?.authenticated ? (await loadUserSettings()) ?? session.settings : undefined;
       const saved = freshSettings ?? deleted;
       setSettingsDraft(cloneSettings(saved));
       setSessionState((current) => ({
@@ -883,6 +883,7 @@ function App({ defaultCompanionBaseUrl, runtimeConfig }: AppProps) {
         settings: saved,
       }));
       setRequiredSetupOpen(validateRequiredSettings(saved).length > 0);
+      setUiRevision((current) => current + 1);
       setSettingsMessage('Deleted drone and refreshed session settings.');
       return saved;
     } finally {
