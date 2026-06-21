@@ -292,6 +292,13 @@ button {
   align-items: flex-start;
 }
 
+.settings-modal-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .settings-modal-head h3 {
   margin: 0;
 }

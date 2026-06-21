@@ -441,9 +441,6 @@ export function UserSettingsPanel({
               <button type="button" className="secondary-button" onClick={() => openDroneEditor(activeDrone?.drone_id)} disabled={loading}>
                 Drone settings
               </button>
-              <button type="button" className="secondary-button" onClick={createAndEditDrone} disabled={loading}>
-                Add drone
-              </button>
               <button type="button" className="secondary-button" onClick={() => setUserEditorOpen(true)} disabled={loading}>
                 Edit user settings
               </button>
@@ -470,10 +467,33 @@ export function UserSettingsPanel({
                 <span className="panel-label">Drone settings</span>
                 <h3 id="drone-editor-title">{editingDroneId?.startsWith('__new__') ? 'Add drone' : 'Edit drone settings'}</h3>
               </div>
-              <button type="button" className="ghost-button" onClick={() => setDroneEditorOpen(false)} disabled={loading || saving}>
-                Close
-              </button>
+              <div className="settings-modal-head-actions">
+                <button type="button" className="secondary-button" onClick={createAndEditDrone} disabled={loading || saving}>
+                  Add drone
+                </button>
+                <button type="button" className="ghost-button" onClick={() => setDroneEditorOpen(false)} disabled={loading || saving}>
+                  Close
+                </button>
+              </div>
             </div>
+
+            <label className="field">
+              <span>Drone</span>
+              <select
+                value={editorDrone.drone_id}
+                onChange={(event) => {
+                  const nextDroneId = event.target.value;
+                  setSelectedDrone(editorProfile.profile_id, nextDroneId);
+                  openDroneEditor(nextDroneId);
+                }}
+              >
+                {editorProfile.fleet.drones.map((drone) => (
+                  <option key={drone.drone_id} value={drone.drone_id}>
+                    {drone.callsign ?? drone.drone_id}
+                  </option>
+                ))}
+              </select>
+            </label>
 
             <div className="config-grid setup-config-grid">
               <label className="field">
