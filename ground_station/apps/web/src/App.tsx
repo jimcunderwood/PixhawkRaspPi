@@ -399,9 +399,6 @@ function ensureRequiredSettingsShape(
   if (!activeProfile.fleet) {
     activeProfile.fleet = buildMinimumFleet(defaultCompanionBaseUrl);
   }
-  if (!activeProfile.fleet.drones.length) {
-    activeProfile.fleet = buildMinimumFleet(defaultCompanionBaseUrl);
-  }
   if (!activeProfile.selected_drone_id || !activeProfile.fleet.drones.some((drone) => drone.drone_id === activeProfile.selected_drone_id)) {
     activeProfile.selected_drone_id = activeProfile.fleet.drones[0]?.drone_id;
   }
