@@ -91,8 +91,10 @@ docker run --rm -p 8080:80 --env-file ground_station/apps/web/.env ground-statio
 
 If the companion lives on another host, set `COMPANION_BASE_URL` to that host's
 reachable address, for example `http://192.168.1.140:8000`. Copy the companion
-`API_KEY` into the ground-station `.env`; it becomes the default `admin`
-password and is copied into the default admin drone connection settings.
+`API_KEY` into the ground-station `.env` if you want the admin account to use
+that value. Otherwise the first startup uses `admin` as the default admin
+password and copies the companion API key into the default admin drone
+connection settings when one is available.
 
 To run the web UI with Docker Compose:
 
@@ -104,7 +106,8 @@ The same Compose file can run the companion profile on one machine and the
 ground-station profile on another. Treat them as separate installs: the
 ground-station profile reads `ground_station/apps/web/.env`, so copy that file
 from the example and set `COMPANION_BASE_URL` to the reachable Companion on
-another machine or service, plus `API_KEY`, before first startup.
+another machine or service. Set `API_KEY` too if you want the admin password
+and default drone API key to match the companion key.
 
 ## Connection URL Examples
 

@@ -12,7 +12,7 @@ const defaultDataDir = process.env.GROUND_STATION_DATA_DIRECTORY || resolve(home
 const defaultPort = Number(process.env.GROUND_STATION_PORT || 8080);
 const defaultHost = process.env.GROUND_STATION_HOST || '0.0.0.0';
 const defaultShellLabel = process.env.GROUND_STATION_SHELL_LABEL || 'web';
-const defaultApiKey = process.env.API_KEY?.trim() || process.env.COMPANION_API_KEY?.trim() || 'ee3ba92d63dcc1b0f54605b9351f00bf16444383e1a8d4cd7cea8825aa8b8c38';
+const defaultApiKey = process.env.API_KEY?.trim() || process.env.COMPANION_API_KEY?.trim() || 'admin';
 const defaultAdminUsername = process.env.GROUND_STATION_ADMIN_USERNAME?.trim() || 'admin';
 
 const contentTypes = {
